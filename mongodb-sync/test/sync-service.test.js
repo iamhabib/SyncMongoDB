@@ -155,4 +155,116 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
 
     assert.strictEqual(mockCollection.deleteOneCalls.length, 2);
   });
+
+  await t.test('should perform initial sync and copy documents in batches', async () => {
+    const { service, mockCollection } = createMockService();
+    
+    // Set running state
+    service.isRunning = true;
+
+    // Stub syncManager initial sync methods
+    service.syncManager.updateInitialSyncProgressCalls = [];
+    service.syncManager.completeInitialSyncCalls = [];
+    
+    service.syncManager.updateInitialSyncProgress = async (collectionName, lastCopiedId, resumeToken, count) => {
+      service.syncManager.updateInitialSyncProgressCalls.push({ collectionName, lastCopiedId, resumeToken, count });
+    };
+    
+    service.syncManager.completeInitialSync = async (collectionName) => {
+      service.syncManager.completeInitialSyncCalls.push({ collectionName });
+    };
+
+    // Mock remote collection with search/find capability returning cursor
+    const mockRemoteCollection = {
+      watchCallsCount: 0,
+      watch() {
+        this.watchCallsCount++;
+        return {
+          resumeToken: { _data: 'initial_resume_token' },
+          async tryNext() {},
+          async close() {}
+        };
+      },
+      async indexes() {
+        return [
+          { name: '_id_', key: { _id: 1 } },
+          { name: 'name_1', key: { name: 1 }, unique: true }
+        ];
+      },
+      findCalls: [],
+      find(query) {
+        this.findCalls.push({ query });
+        return {
+          sort() {
+            return {
+              limit() {
+                return {
+                  async toArray() {
+                    // Return mock documents if it's the first query, else empty array to break the loop
+                    if (!query._id) {
+                      return [
+                        { _id: 'doc_1', name: 'Doc 1' },
+                        { _id: 'doc_2', name: 'Doc 2' }
+                      ];
+                    }
+                    return [];
+                  }
+                };
+              }
+            };
+          }
+        };
+      }
+    };
+
+    mockCollection.createIndexCalls = [];
+    mockCollection.createIndex = async (key, options) => {
+      mockCollection.createIndexCalls.push({ key, options });
+    };
+
+    mockCollection.bulkWriteCalls = [];
+    mockCollection.bulkWrite = async (operations, options) => {
+      mockCollection.bulkWriteCalls.push({ operations, options });
+    };
+
+    const syncState = {
+      resumeToken: null,
+      lastCopiedId: null,
+      initialSyncCompleted: false
+    };
+
+    await service.performInitialSync('users', mockRemoteCollection, mockCollection, syncState);
+
+    // Assert indexes were synchronized (skipping _id_)
+    assert.strictEqual(mockCollection.createIndexCalls.length, 1);
+    assert.deepStrictEqual(mockCollection.createIndexCalls[0], {
+      key: { name: 1 },
+      options: { name: 'name_1', unique: true }
+    });
+
+    // Assert watch called to get resume token
+    assert.strictEqual(mockRemoteCollection.watchCallsCount, 1);
+    
+    // Assert bulkWrite was called once for the batch
+    assert.strictEqual(mockCollection.bulkWriteCalls.length, 1);
+    assert.deepStrictEqual(mockCollection.bulkWriteCalls[0].operations, [
+      { replaceOne: { filter: { _id: 'doc_1' }, replacement: { _id: 'doc_1', name: 'Doc 1' }, upsert: true } },
+      { replaceOne: { filter: { _id: 'doc_2' }, replacement: { _id: 'doc_2', name: 'Doc 2' }, upsert: true } }
+    ]);
+
+    // Assert progress updated
+    assert.strictEqual(service.syncManager.updateInitialSyncProgressCalls.length, 1);
+    assert.deepStrictEqual(service.syncManager.updateInitialSyncProgressCalls[0], {
+      collectionName: 'users',
+      lastCopiedId: 'doc_2',
+      resumeToken: { _data: 'initial_resume_token' },
+      count: 2
+    });
+
+    // Assert initial sync completed
+    assert.strictEqual(service.syncManager.completeInitialSyncCalls.length, 1);
+    assert.deepStrictEqual(service.syncManager.completeInitialSyncCalls[0], {
+      collectionName: 'users'
+    });
+  });
 });

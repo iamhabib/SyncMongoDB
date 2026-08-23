@@ -7,15 +7,23 @@ services:
     container_name: mongo-sync-target
     restart: unless-stopped
     ports:
-      - "${LOCAL_MONGO_PORT:-27017}:27017"
+      - "127.0.0.1:${LOCAL_MONGO_PORT:-27017}:27017"
     volumes:
       - mongo_data:/data/db
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${LOCAL_MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      test: ["CMD", "mongosh", "--quiet", "-u", "${LOCAL_MONGO_ROOT_USER:-admin}", "-p", "${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}", "--eval", "db.adminCommand('ping')"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   # Oplog-inspired sync service: Atlas Change Streams -> local Mongo
   sync:
@@ -31,7 +39,7 @@ services:
     environment:
       # Points at the "mongo" service above, not localhost, since this
       # runs inside the Docker network. Override in .env if needed.
-      LOCAL_MONGO_URL: mongodb://mongo:27017/${MONGO_DATABASE_NAME:-sync_db}
+      LOCAL_MONGO_URL: mongodb://${LOCAL_MONGO_ROOT_USER:-admin}:${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}@mongo:27017/${MONGO_DATABASE_NAME:-sync_db}?authSource=admin
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     volumes:
@@ -42,6 +50,11 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   mongo_data:

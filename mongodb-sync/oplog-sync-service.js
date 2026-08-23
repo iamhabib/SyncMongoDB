@@ -10,7 +10,9 @@ function interpolateUrl(url) {
   if (!url) return url;
   return url
     .replace(/{LOCAL_MONGO_PORT}/g, process.env.LOCAL_MONGO_PORT || '27017')
-    .replace(/{MONGO_DATABASE_NAME}/g, process.env.MONGO_DATABASE_NAME || 'sync_db');
+    .replace(/{MONGO_DATABASE_NAME}/g, process.env.MONGO_DATABASE_NAME || 'sync_db')
+    .replace(/{LOCAL_MONGO_ROOT_USER}/g, process.env.LOCAL_MONGO_ROOT_USER || 'admin')
+    .replace(/{LOCAL_MONGO_ROOT_PASSWORD}/g, process.env.LOCAL_MONGO_ROOT_PASSWORD || '');
 }
 
 class OplogSyncService {
@@ -32,6 +34,7 @@ class OplogSyncService {
     this.retryCount = new Map();
     this.isRunning = false;
     this.expectedCollectionsCount = 0;
+    this.discoveryInterval = null;
   }
 
   async initialize() {
@@ -57,6 +60,9 @@ class OplogSyncService {
 
       this.isRunning = true;
       await this.startAllChangeStreams(collectionNames);
+
+      // Periodically check for newly added collections every 60 seconds
+      this.discoveryInterval = setInterval(() => this.discoverNewCollections(), 60000);
 
       logger.info('Oplog Sync Service is running');
     } catch (err) {
@@ -94,7 +100,13 @@ class OplogSyncService {
       const collection = atlasDb.collection(collectionName);
       const localCollection = localDb.collection(collectionName);
 
-      const syncState = await this.syncManager.getSyncState(collectionName);
+      let syncState = await this.syncManager.getSyncState(collectionName);
+
+      if (!syncState.initialSyncCompleted) {
+        await this.performInitialSync(collectionName, collection, localCollection, syncState);
+        // Refresh sync state to get the saved resume token and updated completion status
+        syncState = await this.syncManager.getSyncState(collectionName);
+      }
 
       logger.info(`[${collectionName}] Starting Change Stream`, {
         lastSyncTime: syncState.lastTimestamp,
@@ -169,12 +181,12 @@ class OplogSyncService {
       ));
 
     if (isResumeError) {
-      logger.warn(`[${collectionName}] Resume token invalid or expired. Clearing token and restarting from present.`, {
+      logger.warn(`[${collectionName}] Resume token invalid or expired. Resetting sync state to trigger a full backfill/re-sync.`, {
         errorCode: error.code,
         errorMessage: error.message
       });
-      await this.syncManager.clearResumeToken(collectionName);
-      // Immediately retry without incrementing retry count (as we resolved the issue by clearing the token)
+      await this.syncManager.resetSyncStateForReSync(collectionName);
+      // Immediately retry to initiate the re-sync
       setTimeout(() => this.startChangeStream(collectionName), 100);
       return;
     }
@@ -247,13 +259,153 @@ class OplogSyncService {
     }
   }
 
+  async syncIndexes(collectionName, remoteCollection, localCollection) {
+    try {
+      logger.info(`[${collectionName}] Syncing indexes...`);
+      const remoteIndexes = await remoteCollection.indexes();
+
+      for (const index of remoteIndexes) {
+        if (index.name === '_id_') {
+          continue; // Default primary index is auto-created
+        }
+
+        const { key, name, ...options } = index;
+        logger.info(`[${collectionName}] Replicating index: ${name}`, { key });
+        await localCollection.createIndex(key, { name, ...options });
+      }
+      logger.info(`[${collectionName}] Indexes synced successfully.`);
+    } catch (err) {
+      logger.warn(`[${collectionName}] Failed to sync indexes. Syncing documents will proceed.`, { error: err.message });
+    }
+  }
+
+  async performInitialSync(collectionName, remoteCollection, localCollection, syncState) {
+    logger.info(`[${collectionName}] Starting Initial Sync...`);
+
+    // Sync indexes before copying data
+    await this.syncIndexes(collectionName, remoteCollection, localCollection);
+
+    let resumeToken = syncState.resumeToken;
+    
+    // 1. Get a resume token to mark our starting position if not already present
+    if (!resumeToken) {
+      logger.info(`[${collectionName}] Retrieving starting resume token...`);
+      const tempStream = remoteCollection.watch([], { maxAwaitTimeMS: 1000 });
+      try {
+        await tempStream.tryNext();
+      } catch (err) {
+        // ignore errors during tryNext (e.g. timeout)
+      }
+      resumeToken = tempStream.resumeToken;
+      await tempStream.close();
+
+      if (!resumeToken) {
+        logger.warn(`[${collectionName}] Could not obtain starting resume token from watch. Change stream will resume from default context.`);
+      }
+    }
+
+    // 2. Start copying documents in batches
+    let lastCopiedId = syncState.lastCopiedId;
+    const batchSize = 1000;
+    let totalSyncedInThisSession = 0;
+
+    logger.info(`[${collectionName}] Copying documents in batches of ${batchSize}...`, { lastCopiedId });
+
+    while (true) {
+      if (!this.isRunning) {
+        throw new Error('Service shutdown during initial sync');
+      }
+
+      const query = lastCopiedId ? { _id: { $gt: lastCopiedId } } : {};
+      const batch = await remoteCollection
+        .find(query)
+        .sort({ _id: 1 })
+        .limit(batchSize)
+        .toArray();
+
+      if (batch.length === 0) {
+        break;
+      }
+
+      // Write batch using bulkWrite with replaceOne upserts to be idempotent and efficient
+      const operations = batch.map(doc => ({
+        replaceOne: {
+          filter: { _id: doc._id },
+          replacement: doc,
+          upsert: true
+        }
+      }));
+
+      await localCollection.bulkWrite(operations, { ordered: false });
+
+      lastCopiedId = batch[batch.length - 1]._id;
+      totalSyncedInThisSession += batch.length;
+
+      // Update sync manager with progress
+      await this.syncManager.updateInitialSyncProgress(
+        collectionName,
+        lastCopiedId,
+        resumeToken,
+        batch.length
+      );
+
+      logger.info(`[${collectionName}] Copied ${totalSyncedInThisSession} documents (last _id: ${lastCopiedId})`);
+    }
+
+    // 3. Mark initial sync complete
+    await this.syncManager.completeInitialSync(collectionName);
+    logger.info(`[${collectionName}] Initial Sync completed successfully.`);
+  }
+
+  async discoverNewCollections() {
+    if (!this.isRunning) return;
+    try {
+      const atlasDb = this.atlasClient.db();
+      const collections = await atlasDb.listCollections().toArray();
+      const collectionNames = collections
+        .map(c => c.name)
+        .filter(name => !name.startsWith('_') && name !== 'system.profile');
+
+      for (const name of collectionNames) {
+        if (!this.changeStreams.has(name)) {
+          logger.info(`[${name}] Dynamic collection discovery detected new collection. Starting sync...`);
+          this.expectedCollectionsCount++;
+          // Start the change stream (which handles initial sync and streams) asynchronously
+          this.startChangeStream(name).catch(err => {
+            logger.error(`[${name}] Failed to start dynamically discovered stream`, { error: err.message });
+          });
+        }
+      }
+    } catch (err) {
+      logger.warn('Failed to dynamically check for new collections', { error: err.message });
+    }
+  }
+
   async getHealth() {
-    const metrics = await this.syncManager.getMetrics();
+    let isAtlasConnected = false;
+    let isLocalConnected = false;
+    try {
+      await this.atlasClient.db().admin().ping();
+      isAtlasConnected = true;
+    } catch (err) {
+      logger.warn('Atlas health check ping failed', { error: err.message });
+    }
+
+    try {
+      await this.localClient.db().admin().ping();
+      isLocalConnected = true;
+    } catch (err) {
+      logger.warn('Local database health check ping failed', { error: err.message });
+    }
+
+    const metrics = await this.syncManager.getMetrics().catch(() => []);
 
     return {
-      isRunning: this.isRunning,
+      isRunning: this.isRunning && isAtlasConnected && isLocalConnected,
       connectedCollections: this.changeStreams.size,
       expectedCollectionsCount: this.expectedCollectionsCount,
+      isAtlasConnected,
+      isLocalConnected,
       syncMetrics: metrics,
       timestamp: new Date()
     };
@@ -263,6 +415,11 @@ class OplogSyncService {
     logger.info('Shutting down gracefully...');
 
     this.isRunning = false;
+
+    if (this.discoveryInterval) {
+      clearInterval(this.discoveryInterval);
+      this.discoveryInterval = null;
+    }
 
     for (const [collectionName, stream] of this.changeStreams) {
       try {

@@ -1,0 +1,300 @@
+[2026-08-23 16:23:08] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:23:08] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:23:08] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:23:08] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:23:08] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:23:08] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:23:08] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:23:08] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:23:08] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:23:08] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:23:08] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:23:08] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:23:08] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:26:29] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:26:29] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:26:29] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:26:29] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:26:29] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:26:29] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:26:29] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:26:29] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:26:29] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:26:29] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:26:29] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:26:29] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:26:29] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:27:41] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:27:41] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:27:41] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:27:41] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:27:41] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:27:41] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:27:41] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:27:41] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:27:41] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:27:41] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:27:41] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:27:41] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:27:41] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:29:57] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:29:57] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:29:57] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:29:57] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:29:57] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:29:57] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:29:57] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:29:57] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:29:57] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:29:57] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:29:57] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:29:57] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:29:57] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:32:11] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:32:11] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:32:11] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:32:11] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:32:11] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:32:11] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:32:11] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:32:11] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:32:11] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:32:11] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:32:11] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:32:11] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:32:11] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:33:29] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:33:29] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:33:29] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:33:29] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:33:29] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:33:29] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:33:29] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:33:29] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:33:29] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:33:29] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:33:29] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:33:29] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:33:29] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:34:57] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:34:57] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:34:57] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:34:57] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:34:57] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:34:57] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:34:57] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:34:57] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:34:57] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:34:57] [INFO] [users] Syncing indexes... 
+[2026-08-23 16:34:57] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 16:34:57] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 16:34:57] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:34:57] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:34:57] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:34:57] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:37:50] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:37:50] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:37:50] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:37:50] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:37:50] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:37:50] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:37:50] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:37:50] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:37:50] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:37:50] [INFO] [users] Syncing indexes... 
+[2026-08-23 16:37:50] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 16:37:50] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 16:37:50] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:37:50] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:37:50] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:37:50] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 16:41:23] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:41:23] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:41:23] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:41:23] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 16:41:23] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:41:23] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 16:41:23] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:41:23] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 16:41:23] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 16:41:23] [INFO] [users] Syncing indexes... 
+[2026-08-23 16:41:23] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 16:41:23] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 16:41:23] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 16:41:23] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 16:41:23] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 16:41:23] [INFO] [users] Initial Sync completed successfully. 

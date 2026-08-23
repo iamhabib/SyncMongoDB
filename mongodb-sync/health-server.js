@@ -8,8 +8,11 @@ function createHealthServer(syncService, port = process.env.PORT || 3000) {
     try {
       const health = await syncService.getHealth();
 
-      if (health.isRunning && health.connectedCollections === health.expectedCollectionsCount) {
-        return res.status(200).json({ status: 'healthy', ...health });
+      if (health.isRunning) {
+        const status = health.connectedCollections === health.expectedCollectionsCount
+          ? 'healthy'
+          : 'initializing';
+        return res.status(200).json({ status, ...health });
       }
       return res.status(503).json({ status: 'unhealthy', ...health });
     } catch (err) {
