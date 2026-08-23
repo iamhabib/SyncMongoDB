@@ -3,7 +3,7 @@ version: "3.9"
 services:
   # Local MongoDB — the sync target. Atlas Change Streams write here.
   mongo:
-    image: mongo:7
+    image: ${MONGO_IMAGE:-mongo:7}
     container_name: mongo-sync-target
     restart: unless-stopped
     ports:
@@ -14,7 +14,7 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${LOCAL_MONGO_ROOT_USER:-admin}
       MONGO_INITDB_ROOT_PASSWORD: ${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "-u", "${LOCAL_MONGO_ROOT_USER:-admin}", "-p", "${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}", "--eval", "db.adminCommand('ping')"]
+      test: [ "CMD", "mongosh", "--quiet", "-u", "${LOCAL_MONGO_ROOT_USER:-admin}", "-p", "${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}", "--eval", "db.adminCommand('ping')" ]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -37,15 +37,13 @@ services:
     env_file:
       - .env
     environment:
-      # Points at the "mongo" service above, not localhost, since this
-      # runs inside the Docker network. Override in .env if needed.
       LOCAL_MONGO_URL: mongodb://${LOCAL_MONGO_ROOT_USER:-admin}:${LOCAL_MONGO_ROOT_PASSWORD:-securepassword}@mongo:27017/${MONGO_DATABASE_NAME:-sync_db}?authSource=admin
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     volumes:
       - sync_logs:/app/logs
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      test: [ "CMD", "node", "-e", "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -55,6 +53,13 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1024M
+        reservations:
+          memory: 512M
 
 volumes:
   mongo_data:

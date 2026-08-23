@@ -19,8 +19,16 @@ async function main() {
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('unhandledRejection', (reason) => {
+      logger.error('Unhandled Rejection detected', { error: reason instanceof Error ? reason.message : reason, stack: reason instanceof Error ? reason.stack : undefined });
+      shutdown('unhandledRejection');
+    });
+    process.on('uncaughtException', (err) => {
+      logger.error('Uncaught Exception detected', { error: err.message, stack: err.stack });
+      shutdown('uncaughtException');
+    });
   } catch (err) {
-    logger.error('Fatal error', { error: err.message, stack: err.stack });
+    logger.error('Fatal error during startup', { error: err.message, stack: err.stack });
     process.exit(1);
   }
 }

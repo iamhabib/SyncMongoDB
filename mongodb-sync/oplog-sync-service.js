@@ -35,6 +35,7 @@ class OplogSyncService {
     this.isRunning = false;
     this.expectedCollectionsCount = 0;
     this.discoveryInterval = null;
+    this.failedStreams = new Set();
   }
 
   async initialize() {
@@ -116,7 +117,7 @@ class OplogSyncService {
       const pipeline = [
         {
           $match: {
-            operationType: { $in: ['insert', 'update', 'replace', 'delete'] }
+            operationType: { $in: ['insert', 'update', 'replace', 'delete', 'drop', 'rename', 'invalidate'] }
           }
         }
       ];
@@ -198,28 +199,41 @@ class OplogSyncService {
       this.retryCount.set(collectionName, retries + 1);
       setTimeout(() => this.startChangeStream(collectionName), RETRY_DELAY_MS);
     } else {
-      logger.error(`[${collectionName}] Max retries exceeded`, { maxRetries: MAX_RETRIES });
+      logger.error(`[${collectionName}] Max retries exceeded. Mark stream as permanently failed.`, { maxRetries: MAX_RETRIES });
+      this.failedStreams.add(collectionName);
     }
   }
 
   async processChange(collectionName, change, localCollection) {
-    const docId = change.documentKey._id;
     const operationType = change.operationType;
-    const operationTime = change.clusterTime || new Date();
+    
+    let operationTime;
+    if (change.clusterTime) {
+      if (typeof change.clusterTime.getHighOrder === 'function') {
+        operationTime = new Date(change.clusterTime.getHighOrder() * 1000);
+      } else {
+        operationTime = new Date(change.clusterTime);
+      }
+    } else {
+      operationTime = new Date();
+    }
 
     try {
       switch (operationType) {
-        case 'insert':
+        case 'insert': {
+          const docId = change.documentKey._id;
           await localCollection.replaceOne(
             { _id: docId },
             change.fullDocument,
             { upsert: true }
           );
-          logger.info(`[${collectionName}] INSERT`, { docId, timestamp: operationTime });
+          logger.debug(`[${collectionName}] INSERT`, { docId, timestamp: operationTime });
           break;
+        }
 
         case 'update':
-        case 'replace':
+        case 'replace': {
+          const docId = change.documentKey._id;
           if (change.fullDocument) {
             await localCollection.replaceOne(
               { _id: docId },
@@ -230,13 +244,38 @@ class OplogSyncService {
             // Document was deleted before we could look it up
             await localCollection.deleteOne({ _id: docId });
           }
-          logger.info(`[${collectionName}] UPDATE`, { docId, timestamp: operationTime });
+          logger.debug(`[${collectionName}] UPDATE`, { docId, timestamp: operationTime });
           break;
+        }
 
-        case 'delete':
+        case 'delete': {
+          const docId = change.documentKey._id;
           await localCollection.deleteOne({ _id: docId });
-          logger.info(`[${collectionName}] DELETE`, { docId, timestamp: operationTime });
+          logger.debug(`[${collectionName}] DELETE`, { docId, timestamp: operationTime });
           break;
+        }
+
+        case 'drop': {
+          try {
+            await localCollection.drop();
+            logger.info(`[${collectionName}] DROPPED collection locally due to remote drop`);
+          } catch (err) {
+            if (err.codeName !== 'NamespaceNotFound') throw err;
+          }
+          break;
+        }
+
+        case 'rename': {
+          const newName = change.to.split('.').pop();
+          await localCollection.rename(newName);
+          logger.info(`[${collectionName}] RENAMED collection locally to ${newName} due to remote rename`);
+          break;
+        }
+
+        case 'invalidate': {
+          logger.warn(`[${collectionName}] Stream invalidated`);
+          throw new Error('Stream invalidated');
+        }
       }
 
       await this.syncManager.updateSyncState(
@@ -369,13 +408,13 @@ class OplogSyncService {
       for (const name of collectionNames) {
         if (!this.changeStreams.has(name)) {
           logger.info(`[${name}] Dynamic collection discovery detected new collection. Starting sync...`);
-          this.expectedCollectionsCount++;
           // Start the change stream (which handles initial sync and streams) asynchronously
           this.startChangeStream(name).catch(err => {
             logger.error(`[${name}] Failed to start dynamically discovered stream`, { error: err.message });
           });
         }
       }
+      this.expectedCollectionsCount = collectionNames.length;
     } catch (err) {
       logger.warn('Failed to dynamically check for new collections', { error: err.message });
     }
@@ -404,6 +443,7 @@ class OplogSyncService {
       isRunning: this.isRunning && isAtlasConnected && isLocalConnected,
       connectedCollections: this.changeStreams.size,
       expectedCollectionsCount: this.expectedCollectionsCount,
+      failedStreams: Array.from(this.failedStreams),
       isAtlasConnected,
       isLocalConnected,
       syncMetrics: metrics,

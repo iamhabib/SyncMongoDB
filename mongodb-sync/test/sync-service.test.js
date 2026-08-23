@@ -6,6 +6,7 @@ process.env.REMOTE_MONGODB_URL = 'mongodb://localhost:27017/source';
 process.env.LOCAL_MONGO_URL = 'mongodb://localhost:27017/target';
 
 const OplogSyncService = require('../oplog-sync-service');
+const SyncManager = require('../sync-manager');
 
 test('OplogSyncService.processChange() unit tests', async (t) => {
   // Helper to create a service instance with mocked dependencies
@@ -266,5 +267,55 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
     assert.deepStrictEqual(service.syncManager.completeInitialSyncCalls[0], {
       collectionName: 'users'
     });
+  });
+});
+
+test('SyncManager checkpoint batching unit tests', async (t) => {
+  await t.test('should buffer checkpoints and flush at threshold or interval', async () => {
+    const syncManager = new SyncManager('mongodb://localhost:27017/target');
+    
+    // Mock db and collection
+    const updateOneCalls = [];
+    syncManager.db = {
+      collection(name) {
+        return {
+          async updateOne(filter, update, options) {
+            updateOneCalls.push({ filter, update, options });
+            return { acknowledged: true };
+          }
+        };
+      }
+    };
+
+    // Initialize with mock interval (skip full initialize to avoid connection)
+    syncManager.flushInterval = null;
+
+    const operationTime = new Date('2026-08-23T12:00:00Z');
+    const resumeToken = { _data: 'resume_token' };
+
+    // 1. Update state 499 times - should NOT write to DB
+    for (let i = 0; i < 499; i++) {
+      syncManager.updateSyncState('orders', operationTime, resumeToken, 1);
+    }
+    assert.strictEqual(updateOneCalls.length, 0);
+
+    // 2. 500th update - should trigger flush
+    syncManager.updateSyncState('orders', operationTime, resumeToken, 1);
+    
+    // Wait a brief tick for async flush to execute
+    await new Promise(resolve => setImmediate(resolve));
+    
+    assert.strictEqual(updateOneCalls.length, 1);
+    assert.deepStrictEqual(updateOneCalls[0].filter, { collection: 'orders' });
+    assert.strictEqual(updateOneCalls[0].update.$inc.totalSynced, 500);
+
+    // 3. Update state 10 times - should NOT write to DB yet
+    syncManager.updateSyncState('orders', operationTime, resumeToken, 10);
+    assert.strictEqual(updateOneCalls.length, 1);
+
+    // 4. Call flushAllCheckpoints manually - should write the remaining 10
+    await syncManager.flushAllCheckpoints();
+    assert.strictEqual(updateOneCalls.length, 2);
+    assert.strictEqual(updateOneCalls[1].update.$inc.totalSynced, 10);
   });
 });

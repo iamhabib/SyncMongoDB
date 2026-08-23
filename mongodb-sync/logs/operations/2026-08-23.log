@@ -298,3 +298,87 @@
 }
 [2026-08-23 16:41:23] [INFO] [users] Copied 2 documents (last _id: doc_2) 
 [2026-08-23 16:41:23] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 17:41:21] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 17:41:21] [INFO] [users] Syncing indexes... 
+[2026-08-23 17:41:21] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 17:41:21] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 17:41:21] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 17:41:21] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 17:41:21] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 17:41:21] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 17:41:34] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 17:41:34] [INFO] [users] Syncing indexes... 
+[2026-08-23 17:41:34] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 17:41:34] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 17:41:34] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 17:41:34] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 17:41:34] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 17:41:34] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 17:46:16] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 17:46:16] [INFO] [users] Syncing indexes... 
+[2026-08-23 17:46:16] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 17:46:16] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 17:46:16] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 17:46:16] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 17:46:16] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 17:46:16] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 17:54:18] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 17:54:18] [INFO] [users] Syncing indexes... 
+[2026-08-23 17:54:18] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 17:54:18] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 17:54:18] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 17:54:18] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 17:54:18] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 17:54:18] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 17:56:21] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 17:56:21] [INFO] [users] Syncing indexes... 
+[2026-08-23 17:56:21] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 17:56:21] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 17:56:21] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 17:56:21] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 17:56:21] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 17:56:21] [INFO] [users] Initial Sync completed successfully. 
+[2026-08-23 17:57:17] [INFO] [users] Starting Initial Sync... 
+[2026-08-23 17:57:17] [INFO] [users] Syncing indexes... 
+[2026-08-23 17:57:17] [INFO] [users] Replicating index: name_1 {
+  "key": {
+    "name": 1
+  }
+}
+[2026-08-23 17:57:17] [INFO] [users] Indexes synced successfully. 
+[2026-08-23 17:57:17] [INFO] [users] Retrieving starting resume token... 
+[2026-08-23 17:57:17] [INFO] [users] Copying documents in batches of 1000... {
+  "lastCopiedId": null
+}
+[2026-08-23 17:57:17] [INFO] [users] Copied 2 documents (last _id: doc_2) 
+[2026-08-23 17:57:17] [INFO] [users] Initial Sync completed successfully. 

@@ -5,6 +5,8 @@ class SyncManager {
   constructor(localMongoUrl) {
     this.client = new MongoClient(localMongoUrl);
     this.db = null;
+    this.pendingCheckpoints = new Map();
+    this.flushInterval = null;
   }
 
   async initialize() {
@@ -21,6 +23,8 @@ class SyncManager {
         await this.db.collection('_sync_metadata').createIndex({ collection: 1 }, { unique: true });
         logger.info('Created _sync_metadata collection');
       }
+
+      this.flushInterval = setInterval(() => this.flushAllCheckpoints(), 2000);
     } catch (err) {
       logger.error('Failed to initialize sync manager', { error: err.message });
       throw err;
@@ -104,6 +108,38 @@ class SyncManager {
   }
 
   async updateSyncState(collectionName, operationTime, resumeToken = null, count = 1) {
+    let pending = this.pendingCheckpoints.get(collectionName);
+    if (!pending) {
+      pending = {
+        collection: collectionName,
+        lastOperationTime: operationTime,
+        resumeToken: resumeToken,
+        count: 0
+      };
+      this.pendingCheckpoints.set(collectionName, pending);
+    }
+
+    pending.lastOperationTime = operationTime;
+    if (resumeToken) {
+      pending.resumeToken = resumeToken;
+    }
+    pending.count += count;
+
+    if (pending.count >= 500) {
+      // Flush asynchronously so we do not block the hot path
+      this.flushCheckpoint(collectionName).catch(err => {
+        logger.error(`Failed to flush checkpoint for ${collectionName}`, { error: err.message });
+      });
+    }
+  }
+
+  async flushCheckpoint(collectionName) {
+    const pending = this.pendingCheckpoints.get(collectionName);
+    if (!pending || pending.count === 0) return;
+
+    const countToFlush = pending.count;
+    pending.count = 0;
+
     try {
       await this.db.collection('_sync_metadata').updateOne(
         { collection: collectionName },
@@ -111,20 +147,30 @@ class SyncManager {
           $set: {
             collection: collectionName,
             lastTimestamp: new Date(),
-            lastOperationTime: operationTime,
+            lastOperationTime: pending.lastOperationTime,
             syncedAt: new Date(),
-            resumeToken: resumeToken
+            resumeToken: pending.resumeToken
           },
-          $inc: { totalSynced: count }
+          $inc: { totalSynced: countToFlush }
         },
         { upsert: true }
       );
     } catch (err) {
-      logger.error('Error updating sync state', {
+      logger.error('Error flushing sync state checkpoint', {
         collection: collectionName,
         error: err.message
       });
+      // Restore count for retry
+      pending.count += countToFlush;
     }
+  }
+
+  async flushAllCheckpoints() {
+    const promises = [];
+    for (const collectionName of this.pendingCheckpoints.keys()) {
+      promises.push(this.flushCheckpoint(collectionName));
+    }
+    await Promise.all(promises);
   }
 
   async clearResumeToken(collectionName) {
@@ -176,6 +222,11 @@ class SyncManager {
   }
 
   async close() {
+    if (this.flushInterval) {
+      clearInterval(this.flushInterval);
+      this.flushInterval = null;
+    }
+    await this.flushAllCheckpoints();
     await this.client.close();
   }
 }
