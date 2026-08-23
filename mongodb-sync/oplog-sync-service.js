@@ -15,6 +15,8 @@ function interpolateUrl(url) {
     .replace(/{LOCAL_MONGO_ROOT_PASSWORD}/g, process.env.LOCAL_MONGO_ROOT_PASSWORD || '');
 }
 
+const DIVERGENCE_CHECK_INTERVAL_MS = parseInt(process.env.DIVERGENCE_CHECK_INTERVAL_MS || '21600000', 10);
+
 class OplogSyncService {
   constructor() {
     if (!process.env.REMOTE_MONGODB_URL) {
@@ -30,12 +32,15 @@ class OplogSyncService {
     this.atlasClient = new MongoClient(remoteUrl);
     this.localClient = new MongoClient(localUrl);
     this.syncManager = new SyncManager(localUrl);
-    this.changeStreams = new Map();
+    this.dbChangeStream = null;
+    this.syncedCollections = new Set();
     this.retryCount = new Map();
     this.isRunning = false;
     this.expectedCollectionsCount = 0;
     this.discoveryInterval = null;
+    this.reconciliationInterval = null;
     this.failedStreams = new Set();
+    this.divergences = new Map();
   }
 
   async initialize() {
@@ -60,10 +65,48 @@ class OplogSyncService {
       });
 
       this.isRunning = true;
-      await this.startAllChangeStreams(collectionNames);
+
+      // 1. Check if we need to obtain a starting database-level resume token before initial syncs
+      let resumeToken = await this.syncManager.getDbResumeToken();
+      if (!resumeToken) {
+        logger.info('No database-level resume token found. Fetching current starting resume token...');
+        const tempStream = atlasDb.watch([], { maxAwaitTimeMS: 1000 });
+        try {
+          await tempStream.tryNext();
+        } catch (err) {
+          // ignore timeout / empty oplog error
+        }
+        resumeToken = tempStream.resumeToken;
+        await tempStream.close();
+        if (resumeToken) {
+          await this.syncManager.saveDbResumeToken(resumeToken);
+          logger.info('Saved initial database-level resume token');
+        }
+      }
+
+      // 2. Perform initial sync for all collections that need it
+      const localDb = this.localClient.db();
+      for (const name of collectionNames) {
+        const remoteCollection = atlasDb.collection(name);
+        const localCollection = localDb.collection(name);
+
+        let syncState = await this.syncManager.getSyncState(name);
+        if (!syncState.initialSyncCompleted) {
+          await this.performInitialSync(name, remoteCollection, localCollection, syncState);
+        }
+        this.syncedCollections.add(name);
+      }
+
+      // 3. Start single database-level change stream
+      await this.startDatabaseStream();
 
       // Periodically check for newly added collections every 60 seconds
       this.discoveryInterval = setInterval(() => this.discoverNewCollections(), 60000);
+
+      // Periodically check for divergence and sync indexes
+      this.reconciliationInterval = setInterval(() => this.runReconciliation(), DIVERGENCE_CHECK_INTERVAL_MS);
+      // Run initial reconciliation checks in background shortly after boot
+      setTimeout(() => this.runReconciliation(), 5000);
 
       logger.info('Oplog Sync Service is running');
     } catch (err) {
@@ -73,50 +116,31 @@ class OplogSyncService {
     }
   }
 
-  async startAllChangeStreams(collectionNames) {
-    for (const collectionName of collectionNames) {
-      await this.startChangeStream(collectionName);
-      // Stagger startup so we don't open too many streams at once
-      await new Promise(r => setTimeout(r, 100));
-    }
-  }
-
-  async startChangeStream(collectionName) {
-    // Close old stream if it exists
-    const oldStream = this.changeStreams.get(collectionName);
-    if (oldStream) {
+  async startDatabaseStream() {
+    if (this.dbChangeStream) {
       try {
-        await oldStream.close();
-        logger.info(`[${collectionName}] Closed existing change stream before restart`);
+        await this.dbChangeStream.close();
+        logger.info('Closed existing database change stream before restart');
       } catch (err) {
-        logger.warn(`[${collectionName}] Error closing existing stream: ${err.message}`);
+        logger.warn(`Error closing existing database stream: ${err.message}`);
       }
-      this.changeStreams.delete(collectionName);
+      this.dbChangeStream = null;
     }
 
     try {
       const atlasDb = this.atlasClient.db();
       const localDb = this.localClient.db();
 
-      const collection = atlasDb.collection(collectionName);
-      const localCollection = localDb.collection(collectionName);
+      let resumeToken = await this.syncManager.getDbResumeToken();
 
-      let syncState = await this.syncManager.getSyncState(collectionName);
-
-      if (!syncState.initialSyncCompleted) {
-        await this.performInitialSync(collectionName, collection, localCollection, syncState);
-        // Refresh sync state to get the saved resume token and updated completion status
-        syncState = await this.syncManager.getSyncState(collectionName);
-      }
-
-      logger.info(`[${collectionName}] Starting Change Stream`, {
-        lastSyncTime: syncState.lastTimestamp,
-        totalSynced: syncState.totalSynced
+      logger.info('Starting Database Change Stream', {
+        hasResumeToken: !!resumeToken
       });
 
       const pipeline = [
         {
           $match: {
+            'ns.coll': { $regex: /^(?!_)(?!system\.)/ },
             operationType: { $in: ['insert', 'update', 'replace', 'delete', 'drop', 'rename', 'invalidate'] }
           }
         }
@@ -126,52 +150,73 @@ class OplogSyncService {
         fullDocument: 'updateLookup',
         maxAwaitTimeMS: 10000
       };
-      // Only pass resumeAfter when we actually have a token, otherwise the
-      // driver throws on `resumeAfter: undefined` in some versions.
-      if (syncState.resumeToken) {
-        options.resumeAfter = syncState.resumeToken;
+
+      if (resumeToken) {
+        options.resumeAfter = resumeToken;
       }
 
-      const changeStream = collection.watch(pipeline, options);
-      this.changeStreams.set(collectionName, changeStream);
+      this.dbChangeStream = atlasDb.watch(pipeline, options);
 
       // Start asynchronous consumer loop
       (async () => {
         try {
-          for await (const change of changeStream) {
+          for await (const change of this.dbChangeStream) {
             if (!this.isRunning) break;
-            await this.processChange(collectionName, change, localCollection);
+            await this.processDbChange(change, localDb);
           }
         } catch (err) {
-          // If the loop terminated because of shutdown/close, ignore
           if (!this.isRunning) return;
-          logger.error(`[${collectionName}] Change Stream cursor error`, { error: err.message });
-          await this.handleStreamError(collectionName, err);
+          logger.error('Database Change Stream cursor error', { error: err.message });
+          await this.handleDatabaseStreamError(err);
         }
       })();
 
     } catch (err) {
-      logger.error(`[${collectionName}] Failed to start change stream`, {
+      logger.error('Failed to start database change stream', {
         error: err.message,
         stack: err.stack
       });
-      await this.handleStreamError(collectionName, err);
+      await this.handleDatabaseStreamError(err);
     }
   }
 
-  async handleStreamError(collectionName, error) {
-    // Close old stream if it exists
-    const oldStream = this.changeStreams.get(collectionName);
-    if (oldStream) {
-      try {
-        await oldStream.close();
-      } catch (err) {
-        // Ignore close error
+  async processDbChange(change, localDb) {
+    const ns = change.ns;
+    if (!ns || !ns.coll) {
+      if (change.operationType === 'invalidate') {
+        logger.warn('Received invalidate event on database stream');
+        throw new Error('Database stream invalidated');
       }
-      this.changeStreams.delete(collectionName);
+      return;
     }
 
-    // Check if error is due to resume token expired / invalid
+    const collectionName = ns.coll;
+    if (collectionName.startsWith('_') || collectionName.startsWith('system.')) {
+      return;
+    }
+
+    this.syncedCollections.add(collectionName);
+    const localCollection = localDb.collection(collectionName);
+
+    await this.processChange(collectionName, change, localCollection);
+
+    if (change._id) {
+      await this.syncManager.saveDbResumeToken(change._id);
+    }
+
+    if (this.retryCount.has('__db_stream__')) {
+      this.retryCount.delete('__db_stream__');
+    }
+  }
+
+  async handleDatabaseStreamError(error) {
+    if (this.dbChangeStream) {
+      try {
+        await this.dbChangeStream.close();
+      } catch (err) {}
+      this.dbChangeStream = null;
+    }
+
     const isResumeError =
       error.code === 280 ||
       error.code === 286 ||
@@ -182,25 +227,47 @@ class OplogSyncService {
       ));
 
     if (isResumeError) {
-      logger.warn(`[${collectionName}] Resume token invalid or expired. Resetting sync state to trigger a full backfill/re-sync.`, {
-        errorCode: error.code,
-        errorMessage: error.message
-      });
-      await this.syncManager.resetSyncStateForReSync(collectionName);
-      // Immediately retry to initiate the re-sync
-      setTimeout(() => this.startChangeStream(collectionName), 100);
+      logger.warn('Database resume token invalid or expired. Resetting database sync state.');
+      await this.syncManager.saveDbResumeToken(null);
+      
+      const atlasDb = this.atlasClient.db();
+      try {
+        const collections = await atlasDb.listCollections().toArray();
+        for (const col of collections) {
+          const name = col.name;
+          if (!name.startsWith('_') && name !== 'system.profile') {
+            await this.syncManager.resetSyncStateForReSync(name);
+          }
+        }
+      } catch (err) {
+        logger.error('Failed to reset collection sync states', { error: err.message });
+      }
+      
+      setTimeout(() => this.startDatabaseStream(), 100);
       return;
     }
 
-    // Normal retry logic
-    const retries = this.retryCount.get(collectionName) || 0;
+    const retries = this.retryCount.get('__db_stream__') || 0;
     if (retries < MAX_RETRIES) {
-      logger.info(`[${collectionName}] Retrying in ${RETRY_DELAY_MS}ms (${retries + 1}/${MAX_RETRIES})`);
-      this.retryCount.set(collectionName, retries + 1);
-      setTimeout(() => this.startChangeStream(collectionName), RETRY_DELAY_MS);
+      logger.info(`Retrying database stream in ${RETRY_DELAY_MS}ms (${retries + 1}/${MAX_RETRIES})`);
+      this.retryCount.set('__db_stream__', retries + 1);
+      setTimeout(() => this.startDatabaseStream(), RETRY_DELAY_MS);
     } else {
-      logger.error(`[${collectionName}] Max retries exceeded. Mark stream as permanently failed.`, { maxRetries: MAX_RETRIES });
-      this.failedStreams.add(collectionName);
+      logger.error('Max database stream retries exceeded. Mark all collections as failed.', { maxRetries: MAX_RETRIES });
+      const atlasDb = this.atlasClient.db();
+      try {
+        const collections = await atlasDb.listCollections().toArray();
+        for (const col of collections) {
+          const name = col.name;
+          if (!name.startsWith('_') && name !== 'system.profile') {
+            this.failedStreams.add(name);
+          }
+        }
+      } catch (e) {
+        for (const name of this.syncedCollections) {
+          this.failedStreams.add(name);
+        }
+      }
     }
   }
 
@@ -266,9 +333,14 @@ class OplogSyncService {
         }
 
         case 'rename': {
-          const newName = change.to.split('.').pop();
-          await localCollection.rename(newName);
-          logger.info(`[${collectionName}] RENAMED collection locally to ${newName} due to remote rename`);
+          const toNs = change.to;
+          const newName = toNs && toNs.coll ? toNs.coll : (typeof toNs === 'string' ? toNs.split('.').pop() : null);
+          if (newName) {
+            await localCollection.rename(newName);
+            logger.info(`[${collectionName}] RENAMED collection locally to ${newName} due to remote rename`);
+          } else {
+            logger.warn(`[${collectionName}] Received rename event but could not determine new name`, { to: toNs });
+          }
           break;
         }
 
@@ -278,17 +350,21 @@ class OplogSyncService {
         }
       }
 
-      await this.syncManager.updateSyncState(
-        collectionName,
-        operationTime,
-        change._id, // resume token
-        1
-      );
+      // Only checkpoint for data events, not DDL events like drop/rename/invalidate
+      if (['insert', 'update', 'replace', 'delete'].includes(operationType)) {
+        await this.syncManager.updateSyncState(
+          collectionName,
+          operationTime,
+          change._id, // resume token
+          1
+        );
+      }
 
       if (this.retryCount.has(collectionName)) {
         this.retryCount.delete(collectionName);
       }
     } catch (err) {
+      const docId = change.documentKey ? change.documentKey._id : undefined;
       logger.error(`[${collectionName}] Failed to apply change`, {
         error: err.message,
         docId,
@@ -400,23 +476,100 @@ class OplogSyncService {
     if (!this.isRunning) return;
     try {
       const atlasDb = this.atlasClient.db();
+      const localDb = this.localClient.db();
       const collections = await atlasDb.listCollections().toArray();
       const collectionNames = collections
         .map(c => c.name)
         .filter(name => !name.startsWith('_') && name !== 'system.profile');
 
       for (const name of collectionNames) {
-        if (!this.changeStreams.has(name)) {
+        if (!this.syncedCollections.has(name)) {
           logger.info(`[${name}] Dynamic collection discovery detected new collection. Starting sync...`);
-          // Start the change stream (which handles initial sync and streams) asynchronously
-          this.startChangeStream(name).catch(err => {
-            logger.error(`[${name}] Failed to start dynamically discovered stream`, { error: err.message });
-          });
+          this.syncedCollections.add(name);
+          const remoteCollection = atlasDb.collection(name);
+          const localCollection = localDb.collection(name);
+
+          (async () => {
+            try {
+              const syncState = await this.syncManager.getSyncState(name);
+              if (!syncState.initialSyncCompleted) {
+                await this.performInitialSync(name, remoteCollection, localCollection, syncState);
+              }
+            } catch (err) {
+              logger.error(`[${name}] Failed to sync dynamically discovered collection`, { error: err.message });
+            }
+          })();
         }
       }
       this.expectedCollectionsCount = collectionNames.length;
     } catch (err) {
       logger.warn('Failed to dynamically check for new collections', { error: err.message });
+    }
+  }
+
+  async runReconciliation() {
+    if (!this.isRunning) return;
+    try {
+      await this.runDivergenceCheck();
+      await this.syncAllIndexes();
+    } catch (err) {
+      logger.error('Error during periodic reconciliation', { error: err.message });
+    }
+  }
+
+  async runDivergenceCheck() {
+    logger.info('Starting divergence check...');
+    const atlasDb = this.atlasClient.db();
+    const localDb = this.localClient.db();
+
+    const collections = await atlasDb.listCollections().toArray();
+    const collectionNames = collections
+      .map(c => c.name)
+      .filter(name => !name.startsWith('_') && name !== 'system.profile');
+
+    const newDivergences = new Map();
+
+    for (const name of collectionNames) {
+      try {
+        const remoteColl = atlasDb.collection(name);
+        const localColl = localDb.collection(name);
+
+        const remoteCount = await remoteColl.countDocuments();
+        const localCount = await localColl.countDocuments();
+
+        const diff = Math.abs(remoteCount - localCount);
+        newDivergences.set(name, diff);
+
+        if (diff > 0) {
+          logger.warn(`[${name}] Divergence detected! Remote count: ${remoteCount}, Local count: ${localCount}. Difference: ${diff}`);
+        } else {
+          logger.info(`[${name}] In sync. Count: ${remoteCount}`);
+        }
+      } catch (err) {
+        logger.error(`[${name}] Failed to run divergence check`, { error: err.message });
+      }
+    }
+    this.divergences = newDivergences;
+  }
+
+  async syncAllIndexes() {
+    logger.info('Starting periodic index synchronization...');
+    const atlasDb = this.atlasClient.db();
+    const localDb = this.localClient.db();
+
+    const collections = await atlasDb.listCollections().toArray();
+    const collectionNames = collections
+      .map(c => c.name)
+      .filter(name => !name.startsWith('_') && name !== 'system.profile');
+
+    for (const name of collectionNames) {
+      try {
+        const remoteColl = atlasDb.collection(name);
+        const localColl = localDb.collection(name);
+        await this.syncIndexes(name, remoteColl, localColl);
+      } catch (err) {
+        logger.error(`[${name}] Failed to periodically sync indexes`, { error: err.message });
+      }
     }
   }
 
@@ -439,14 +592,20 @@ class OplogSyncService {
 
     const metrics = await this.syncManager.getMetrics().catch(() => []);
 
+    const divergenceObj = {};
+    for (const [col, diff] of this.divergences.entries()) {
+      divergenceObj[col] = diff;
+    }
+
     return {
       isRunning: this.isRunning && isAtlasConnected && isLocalConnected,
-      connectedCollections: this.changeStreams.size,
+      connectedCollections: this.syncedCollections.size,
       expectedCollectionsCount: this.expectedCollectionsCount,
       failedStreams: Array.from(this.failedStreams),
       isAtlasConnected,
       isLocalConnected,
       syncMetrics: metrics,
+      divergences: divergenceObj,
       timestamp: new Date()
     };
   }
@@ -461,13 +620,19 @@ class OplogSyncService {
       this.discoveryInterval = null;
     }
 
-    for (const [collectionName, stream] of this.changeStreams) {
+    if (this.reconciliationInterval) {
+      clearInterval(this.reconciliationInterval);
+      this.reconciliationInterval = null;
+    }
+
+    if (this.dbChangeStream) {
       try {
-        await stream.close();
-        logger.info(`Closed change stream for ${collectionName}`);
+        await this.dbChangeStream.close();
+        logger.info('Closed database change stream');
       } catch (err) {
-        logger.error(`Error closing stream for ${collectionName}`, { error: err.message });
+        logger.error('Error closing database change stream', { error: err.message });
       }
+      this.dbChangeStream = null;
     }
 
     try {

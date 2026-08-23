@@ -319,3 +319,141 @@ test('SyncManager checkpoint batching unit tests', async (t) => {
     assert.strictEqual(updateOneCalls[1].update.$inc.totalSynced, 10);
   });
 });
+
+test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
+  const createService = () => {
+    const service = new OplogSyncService();
+    
+    // Stub syncManager
+    service.syncManager = {
+      savedTokens: [],
+      async saveDbResumeToken(token) {
+        this.savedTokens.push(token);
+      },
+      async getMetrics() {
+        return [{ collection: 'users', totalSynced: 10 }];
+      }
+    };
+    
+    return service;
+  };
+
+  await t.test('M5: processDbChange should route insert event to correct collection and save token', async () => {
+    const service = createService();
+    let processChangeCalled = false;
+    let targetCollectionPassed = null;
+    let targetChangePassed = null;
+
+    service.processChange = async (colName, change, localCollection) => {
+      processChangeCalled = true;
+      targetCollectionPassed = colName;
+      targetChangePassed = change;
+    };
+
+    const mockLocalDb = {
+      collection(name) {
+        return { name };
+      }
+    };
+
+    const changeEvent = {
+      _id: { _data: 'db_resume_token_123' },
+      operationType: 'insert',
+      ns: { db: 'source', coll: 'orders' },
+      documentKey: { _id: 'doc_123' },
+      fullDocument: { _id: 'doc_123', item: 'Laptop' }
+    };
+
+    await service.processDbChange(changeEvent, mockLocalDb);
+
+    assert.strictEqual(processChangeCalled, true);
+    assert.strictEqual(targetCollectionPassed, 'orders');
+    assert.deepStrictEqual(targetChangePassed, changeEvent);
+    assert.strictEqual(service.syncedCollections.has('orders'), true);
+    assert.strictEqual(service.syncManager.savedTokens.length, 1);
+    assert.deepStrictEqual(service.syncManager.savedTokens[0], changeEvent._id);
+  });
+
+  await t.test('M7: runDivergenceCheck should calculate difference between remote and local collections', async () => {
+    const service = createService();
+    
+    // Mock clients and collections
+    service.atlasClient = {
+      db() {
+        return {
+          listCollections() {
+            return {
+              toArray: async () => [{ name: 'products' }]
+            };
+          },
+          collection(name) {
+            return {
+              async countDocuments() {
+                return 150; // Remote has 150 docs
+              }
+            };
+          }
+        };
+      }
+    };
+
+    service.localClient = {
+      db() {
+        return {
+          collection(name) {
+            return {
+              async countDocuments() {
+                return 145; // Local has 145 docs
+              }
+            };
+          }
+        };
+      }
+    };
+
+    await service.runDivergenceCheck();
+
+    assert.strictEqual(service.divergences.get('products'), 5); // 150 - 145 = 5 diff
+
+    const health = await service.getHealth();
+    assert.deepStrictEqual(health.divergences, { products: 5 });
+  });
+
+  await t.test('M10: syncAllIndexes should trigger indexes replication on all synced collections', async () => {
+    const service = createService();
+    let syncIndexesCalled = false;
+    let syncIndexesCollection = null;
+
+    service.syncIndexes = async (name, remote, local) => {
+      syncIndexesCalled = true;
+      syncIndexesCollection = name;
+    };
+
+    service.atlasClient = {
+      db() {
+        return {
+          listCollections() {
+            return {
+              toArray: async () => [{ name: 'payments' }]
+            };
+          },
+          collection(name) { return { name }; }
+        };
+      }
+    };
+
+    service.localClient = {
+      db() {
+        return {
+          collection(name) { return { name }; }
+        };
+      }
+    };
+
+    await service.syncAllIndexes();
+
+    assert.strictEqual(syncIndexesCalled, true);
+    assert.strictEqual(syncIndexesCollection, 'payments');
+  });
+});
+

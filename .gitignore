@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+mongodb-sync/node_modules/
+
+# Environment Configuration
+.env
+
+# Logs
+*.log
+*.log.gz
+logs/
+mongodb-sync/logs/

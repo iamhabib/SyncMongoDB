@@ -4,17 +4,18 @@ Production-grade sync service that mirrors collection changes from a remote Mong
 
 ## Architecture & Production Features
 
-1. **Automated Initial Sync**: If a collection has not been synced, the service automatically copies all pre-existing documents in batches before starting the Change Stream.
-2. **Resumable Keyset Batching**: Uses keyset pagination (`_id > lastId` sorted by `_id`) to perform initial syncs efficiently on large collections (5GB+) without memory bloat. If the service restarts, it resumes copying exactly where it left off.
-3. **High-Throughput Checkpoint Batching**: Accumulates sync checkpoints in memory and flushes them to `_sync_metadata` in batches of 500 events or every 2 seconds (whichever comes first), boosting maximum sync throughput from ~2k events/sec to 20k+ events/sec.
-4. **Dynamic Index Replication**: Fetches and replicates all secondary indexes (compound keys, text indices, unique constraints) from the remote collection to the local target database before copying data.
-5. **Race-Condition Prevention**: Captures the starting resume token *before* executing the initial data copy. Once the copy finishes, the Change Stream starts from that token, overlaying modifications made during the copy phase.
-6. **DDL Event Propagation**: Monitors `drop`, `rename`, and `invalidate` events, dynamically reflecting structural schema changes (dropping/renaming local collections) to keep collections in perfect sync.
-7. **Dynamic Collection Discovery**: Runs a background poll every 60 seconds to detect newly created remote collections, automatically triggering their index replication, initial sync, and change streams with zero downtime.
-8. **Active Connection & Stream Health Checks**: Executes deep health checks using `admin().ping()` on both databases, and monitors running change streams. Returns HTTP `503 Service Unavailable` if a database goes offline or if a stream exceeds `MAX_RETRIES` and fails permanently.
-9. **Prometheus Metrics lag monitoring**: Exposes real-time sync metrics at `/metrics` in standard Prometheus text format, including a gauge `mongodb_sync_lag_seconds` per collection, ready to be scraped and set up for alerts.
-10. **Database Security Hardening**: The local MongoDB target is protected via username/password root authentication and its host port is bound strictly to `127.0.0.1` to prevent unauthorized public interface access.
-11. **Daily Log Rotation & Gzip Compression**: Organizes logs into daily folders (`combined/`, `errors/`, `operations/`), automatically compresses the previous day's log to `.log.gz` asynchronously, enforces a 60-day retention cleanup, and applies Docker daemon log size capping (30MB max per container).
+1. **Database-level Change Stream (M5)**: Watch the entire database via a single `db.watch()` stream. This guarantees that multi-collection transactions are applied locally in their exact causal order.
+2. **Automated Initial Sync**: If a collection has not been synced, the service automatically copies all pre-existing documents in batches before subscribing to the database stream.
+3. **Resumable Keyset Batching**: Uses keyset pagination (`_id > lastId` sorted by `_id`) to perform initial syncs efficiently on large collections (5GB+) without memory bloat. If the service restarts, it resumes copying exactly where it left off.
+4. **High-Throughput Checkpoint Batching**: Accumulates sync checkpoints in memory and flushes them to `_sync_metadata` in batches of 500 events or every 2 seconds (whichever comes first), boosting maximum sync throughput from ~2k events/sec to 20k+ events/sec.
+5. **Periodic Schema and Count Reconciliation (M7, M10)**: Runs a periodic reconciliation loop (defaulting to every 6 hours) that compares source vs target document counts and replicates any newly added indexes to resolve schema and data drift.
+6. **Race-Condition Prevention**: Captures the database-level starting resume token *before* executing the initial data copy. Once the initial copy completes, the stream starts from that token, applying modifications made during the copy phase.
+7. **DDL Event Propagation**: Monitors `drop`, `rename`, and `invalidate` events, dynamically reflecting structural schema changes (dropping/renaming local collections) to keep collections in perfect sync.
+8. **Dynamic Collection Discovery**: Runs a background poll every 60 seconds to detect newly created remote collections, automatically triggering their index replication and initial sync with zero downtime.
+9. **Active Connection & Stream Health Checks**: Executes deep health checks using `admin().ping()` on both databases. Returns HTTP `200 OK` with a `"degraded"` status if any collection fails permanently, keeping the service alive to process other healthy streams while notifying operators.
+10. **Prometheus Metrics lag and drift monitoring**: Exposes real-time sync metrics at `/metrics` in standard Prometheus text format, including `mongodb_sync_lag_seconds` and `mongodb_sync_divergence_count` per collection.
+11. **Database Security Hardening**: The local MongoDB target is protected via username/password root authentication and its host port is bound strictly to `127.0.0.1` to prevent unauthorized public interface access.
+12. **Daily Log Rotation & Gzip Compression**: Organizes logs into daily folders (`combined/`, `errors/`, `operations/`), automatically compresses the previous day's log to `.log.gz` asynchronously, enforces a 60-day retention cleanup, and applies Docker daemon log size capping (30MB max per container).
 
 ---
 
@@ -27,8 +28,8 @@ Production-grade sync service that mirrors collection changes from a remote Mong
 ├── README.md
 └── mongodb-sync/              # sync service source
     ├── app.js                   # entry point + graceful shutdown
-    ├── oplog-sync-service.js    # Change Stream, initial sync & index engine
-    ├── sync-manager.js          # per-collection metadata tracker
+    ├── oplog-sync-service.js    # Database-level Change Stream, initial sync & index engine
+    ├── sync-manager.js          # database and collection metadata tracker
     ├── health-server.js         # active /health and /metrics endpoints
     ├── logger.js                # daily rotating + gzipped winston logs
     ├── Dockerfile               # production container (non-root, healthcheck)
@@ -66,8 +67,9 @@ Production-grade sync service that mirrors collection changes from a remote Mong
 | `LOCAL_MONGO_URL` | Local connection string. Supports `{LOCAL_MONGO_ROOT_USER}`, `{LOCAL_MONGO_ROOT_PASSWORD}`, `{LOCAL_MONGO_PORT}`, and `{MONGO_DATABASE_NAME}` placeholders | *required* |
 | `PORT` | HTTP port for the health/metrics server | `3000` |
 | `LOG_LEVEL` | Winston log level (`debug`, `info`, `warn`, `error`) | `info` |
-| `MAX_RETRIES` | Max retry attempts per collection on stream error | `10` |
+| `MAX_RETRIES` | Max retry attempts per database stream error | `10` |
 | `RETRY_DELAY_MS` | Delay between retries in milliseconds | `5000` |
+| `DIVERGENCE_CHECK_INTERVAL_MS` | Interval in ms between count reconciliation and index replication loops | `21600000` (6 hrs) |
 
 ---
 

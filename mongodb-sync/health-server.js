@@ -35,9 +35,25 @@ function createHealthServer(syncService, port = process.env.PORT || 3000) {
       promText += '# HELP mongodb_sync_lag_seconds Lag in seconds between remote and local collection\n';
       promText += '# TYPE mongodb_sync_lag_seconds gauge\n';
       for (const m of metrics) {
-        const lag = m.lastOperationTime
-          ? Math.max(0, (Date.now() - new Date(m.lastOperationTime).getTime()) / 1000)
-          : 0;
+        let lag = 0;
+        if (m.lastOperationTime) {
+          let opTimeMs;
+          const raw = m.lastOperationTime;
+          if (raw instanceof Date) {
+            opTimeMs = raw.getTime();
+          } else if (typeof raw === 'number') {
+            opTimeMs = raw;
+          } else if (typeof raw === 'object' && raw.$timestamp) {
+            // BSON Timestamp stored as {$timestamp: {t: <seconds>, i: <increment>}}
+            opTimeMs = raw.$timestamp.t * 1000;
+          } else if (typeof raw.getHighBits === 'function') {
+            // Live BSON Timestamp object from driver
+            opTimeMs = raw.getHighBits() * 1000;
+          } else {
+            opTimeMs = new Date(raw).getTime();
+          }
+          lag = Number.isFinite(opTimeMs) ? Math.max(0, (Date.now() - opTimeMs) / 1000) : 0;
+        }
         promText += `mongodb_sync_lag_seconds{collection="${m.collection}"} ${lag.toFixed(3)}\n`;
       }
       promText += '\n';
@@ -57,6 +73,15 @@ function createHealthServer(syncService, port = process.env.PORT || 3000) {
         const isFailed = health.failedStreams && health.failedStreams.includes(m.collection);
         const statusVal = isFailed ? 0 : 1;
         promText += `mongodb_sync_stream_running{collection="${m.collection}"} ${statusVal}\n`;
+      }
+      promText += '\n';
+
+      // 4. Divergence Metric
+      promText += '# HELP mongodb_sync_divergence_count Difference in document count between remote and local collection\n';
+      promText += '# TYPE mongodb_sync_divergence_count gauge\n';
+      for (const m of metrics) {
+        const diff = (health.divergences && health.divergences[m.collection]) || 0;
+        promText += `mongodb_sync_divergence_count{collection="${m.collection}"} ${diff}\n`;
       }
 
       res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');

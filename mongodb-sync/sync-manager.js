@@ -212,9 +212,37 @@ class SyncManager {
     }
   }
 
+  async getDbResumeToken() {
+    try {
+      const doc = await this.db.collection('_sync_metadata').findOne({ collection: '__db_stream__' });
+      return doc ? doc.resumeToken : null;
+    } catch (err) {
+      logger.error('Error getting db resume token', { error: err.message });
+      return null;
+    }
+  }
+
+  async saveDbResumeToken(resumeToken) {
+    try {
+      await this.db.collection('_sync_metadata').updateOne(
+        { collection: '__db_stream__' },
+        {
+          $set: {
+            collection: '__db_stream__',
+            resumeToken: resumeToken,
+            lastTimestamp: new Date()
+          }
+        },
+        { upsert: true }
+      );
+    } catch (err) {
+      logger.error('Error saving db resume token', { error: err.message });
+    }
+  }
+
   async getMetrics() {
     try {
-      return await this.db.collection('_sync_metadata').find({}).toArray();
+      return await this.db.collection('_sync_metadata').find({ collection: { $ne: '__db_stream__' } }).toArray();
     } catch (err) {
       logger.error('Error getting metrics', { error: err.message });
       return [];
