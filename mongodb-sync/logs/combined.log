@@ -1,0 +1,144 @@
+[2026-08-23 15:32:18] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:32:18] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:32:18] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:32:18] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:32:18] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:32:18] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:32:18] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:32:18] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:34:54] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:34:54] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:34:54] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:34:54] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:34:54] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:34:54] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:34:54] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:34:54] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:36:08] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:36:08] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:36:08] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:36:08] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:36:08] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:36:08] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:36:08] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:36:08] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:37:18] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:37:18] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:37:18] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:37:18] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:37:18] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:37:18] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:37:18] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:37:18] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:45:10] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:45:10] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:45:10] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:45:10] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:45:10] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:45:10] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:45:10] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:45:10] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:51:50] [INFO] [users] INSERT {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:51:50] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:51:50] [INFO] [users] UPDATE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:51:50] [INFO] [users] DELETE {
+  "docId": "doc_abc"
+}
+[2026-08-23 15:51:50] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:51:50] [INFO] [items] INSERT {
+  "docId": "doc_1"
+}
+[2026-08-23 15:51:50] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}
+[2026-08-23 15:51:50] [INFO] [items] DELETE {
+  "docId": "doc_1"
+}

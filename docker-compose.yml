@@ -1,0 +1,48 @@
+version: "3.9"
+
+services:
+  # Local MongoDB — the sync target. Atlas Change Streams write here.
+  mongo:
+    image: mongo:7
+    container_name: mongo-sync-target
+    restart: unless-stopped
+    ports:
+      - "${LOCAL_MONGO_PORT:-27017}:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Oplog-inspired sync service: Atlas Change Streams -> local Mongo
+  sync:
+    build:
+      context: ./mongodb-sync
+    container_name: mongodb-oplog-sync
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      # Points at the "mongo" service above, not localhost, since this
+      # runs inside the Docker network. Override in .env if needed.
+      LOCAL_MONGO_URL: mongodb://mongo:27017/${MONGO_DATABASE_NAME:-sync_db}
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    volumes:
+      - sync_logs:/app/logs
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:' + (process.env.PORT || 3000) + '/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  mongo_data:
+  sync_logs:
