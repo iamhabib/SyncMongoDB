@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # Local MongoDB — the sync target. Atlas Change Streams write here.
   mongo:
