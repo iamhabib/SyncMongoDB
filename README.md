@@ -75,12 +75,25 @@ Production-grade sync service that mirrors collection changes from a remote Mong
 
 ## Verification & Monitoring
 
-Check the status of the sync service and database connectivity:
+We have provided a helper CLI script `monitor.sh` in the root directory to easily monitor your live sync service. 
+
+Run it directly from the host:
 ```bash
-curl http://localhost:8080/health
-curl http://localhost:8080/metrics
+./monitor.sh
+```
+
+Alternatively, you can query endpoints and tail logs manually:
+```bash
+# Check the status of the sync service and database connectivity
+curl http://localhost:3000/health
+
+# View live Prometheus metrics (lag, counts, drift)
+curl http://localhost:3000/metrics
+
+# Tail live container logs directly
 docker compose logs -f sync
 ```
+
 
 ---
 
