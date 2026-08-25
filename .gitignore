@@ -8,5 +8,9 @@ mongodb-sync/node_modules/
 # Logs
 *.log
 *.log.gz
-logs/
+LOGS/
 mongodb-sync/logs/
+
+# Local Database Data
+DATA_SOURCE/
+
