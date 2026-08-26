@@ -27,7 +27,11 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
 ├── docker-compose.yml
 ├── .env.example
 ├── README.md
+├── SHIPMENT.md              # how to ship local Mongo data to another host
+├── shipment.sh              # interactive SSH transfer of DATA_SOURCE
 ├── monitor.sh
+├── DATA_SOURCE/             # local MongoDB data dir (gitignored; created at runtime)
+├── LOGS/                    # sync service logs (gitignored)
 └── mongodb-sync/
     ├── app.js
     ├── oplog-sync-service.js
@@ -35,6 +39,7 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
     ├── health-server.js
     ├── logger.js
     ├── Dockerfile
+    ├── docker-entrypoint.sh
     ├── package.json
     └── test/
         └── sync-service.test.js
@@ -79,13 +84,25 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
 
 ---
 
-## Verification & Monitoring
+## Monitoring (`monitor.sh`)
+
+Interactive helper for live logs, health, and Prometheus metrics. Uses `PORT` from `.env` (default `3000`).
 
 ```bash
+chmod +x monitor.sh
 ./monitor.sh
 ```
 
-Or manually:
+| Option | What it does |
+|--------|----------------|
+| `1` | Tail sync container stdout/stderr (`docker compose logs -f sync`) |
+| `2` | Tail today's combined log under `LOGS/combined/` (via the container) |
+| `3` | Tail today's error log under `LOGS/errors/` |
+| `4` | `GET /health` — JSON status (`healthy` / `syncing` / `degraded` / …); uses `jq` if installed |
+| `5` | `GET /metrics` — Prometheus text (lag, sync counts, divergence) |
+| `6` | Exit |
+
+Equivalent manual checks (health/metrics are bound to localhost on the host):
 
 ```bash
 curl http://127.0.0.1:3000/health
@@ -105,8 +122,24 @@ npm test
 
 ---
 
+## Shipping local data (`DATA_SOURCE`)
+
+The Compose volume `./DATA_SOURCE` is the **full local MongoDB data directory**. To move it to another machine (e.g. when this host is down for sync), use:
+
+```bash
+chmod +x shipment.sh
+./shipment.sh
+```
+
+The script prompts for remote IP, SSH user, key or password, and destination path (default `/var/www/SyncMongoDB`), then packs and uploads `DATA_SOURCE` over SSH.
+
+Full steps, restore, and safety notes: see [SHIPMENT.md](./SHIPMENT.md).
+
+---
+
 ## Operational notes
 
 - Collections whose names start with `_` (including `_sync_metadata`) and `system.*` are not synced from the remote.
 - After a long outage, if the change stream resume token has fallen off the oplog, expect a **full re-sync** (local user collections dropped and recopied). Size capacity and oplog window accordingly.
 - Prefer keeping `AUTO_REPAIR_ON_DIVERGENCE=false` unless you accept periodic full collection rebuilds when counts disagree (counts alone are a coarse signal).
+- Ship the **entire** `DATA_SOURCE` tree (or use `shipment.sh`); do not copy individual `.wt` files. Use the same Mongo major version (`mongo:7`) and root credentials on the destination.

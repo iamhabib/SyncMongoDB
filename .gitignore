@@ -14,3 +14,6 @@ mongodb-sync/logs/
 # Local Database Data
 DATA_SOURCE/
 
+# Shipment archives
+shipments/
+
