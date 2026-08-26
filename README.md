@@ -102,7 +102,7 @@ chmod +x monitor.sh
 | `5` | `GET /metrics` once (Prometheus) |
 | `6` | **Watch live sync counters** — polls health; `totalSynced` rises when source changes replicate |
 | `7` | Watch replication log lines (set `LOG_REPLICATION_EVENTS=true` in `.env`, recreate sync) |
-| `8` | **Query local DB** — collection counts, samples, or custom `mongosh` JS |
+| `8` | **Query LOCAL DB only** — counts/samples/custom JS against `mongo-sync-target` (synced data). Never Atlas/remote. |
 | `9` | Exit |
 
 To see each INSERT/UPDATE/DELETE in option `7`:

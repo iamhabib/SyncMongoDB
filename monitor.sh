@@ -87,7 +87,10 @@ watch_replication_logs() {
 
 query_menu() {
   echo
-  echo "========== Local DB query ($DB_NAME @ mongo container) =========="
+  echo "========== LOCAL DB only (synced copy on this host) =========="
+  echo "Container: mongo-sync-target  |  DB: ${DB_NAME}"
+  echo "This does NOT query Atlas/remote. Only data already replicated here."
+  echo "--------------------------------------------------------------"
   echo "1) List collections + counts"
   echo "2) Show _sync_metadata"
   echo "3) Sample documents from a collection (find limit)"
@@ -146,11 +149,12 @@ echo "4) Check service health API (JSON)"
 echo "5) View Prometheus metrics once"
 echo "6) Watch live sync counters (recommended — see replication)"
 echo "7) Watch replication log lines (needs LOG_REPLICATION_EVENTS=true)"
-echo "8) Query local DB (counts / sample / custom)"
+echo "8) Query LOCAL DB only (synced data — not Atlas/remote)"
 echo "9) Exit"
 echo "=========================================================="
 echo "Note: Option 2 alone usually will NOT show each replicated"
 echo "doc while LOG_LEVEL=info. Use 6 (or 7 with replication logs)."
+echo "Option 8 always hits local mongo container, never remote."
 echo "=========================================================="
 read -r -p "Enter choice [1-9]: " choice
 
