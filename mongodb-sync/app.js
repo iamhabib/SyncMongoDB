@@ -5,22 +5,37 @@ const createHealthServer = require('./health-server');
 
 async function main() {
   const syncService = new OplogSyncService();
+  let shuttingDown = false;
 
   try {
     await syncService.initialize();
     const server = createHealthServer(syncService);
 
     const shutdown = async (signal) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       logger.info(`${signal} received, shutting down...`);
-      server.close();
-      await syncService.shutdown();
-      process.exit(0);
+      try {
+        await new Promise((resolve) => server.close(resolve));
+        await syncService.shutdown();
+        process.exit(0);
+      } catch (err) {
+        logger.error('Error during shutdown', { error: err.message });
+        process.exit(1);
+      }
     };
 
-    process.on('SIGTERM', () => shutdown('SIGTERM'));
-    process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGTERM', () => {
+      shutdown('SIGTERM');
+    });
+    process.on('SIGINT', () => {
+      shutdown('SIGINT');
+    });
     process.on('unhandledRejection', (reason) => {
-      logger.error('Unhandled Rejection detected', { error: reason instanceof Error ? reason.message : reason, stack: reason instanceof Error ? reason.stack : undefined });
+      logger.error('Unhandled Rejection detected', {
+        error: reason instanceof Error ? reason.message : reason,
+        stack: reason instanceof Error ? reason.stack : undefined
+      });
       shutdown('unhandledRejection');
     });
     process.on('uncaughtException', (err) => {

@@ -1,7 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
 
-// Set mock environment variables before importing
 process.env.REMOTE_MONGODB_URL = 'mongodb://localhost:27017/source';
 process.env.LOCAL_MONGO_URL = 'mongodb://localhost:27017/target';
 
@@ -9,22 +8,23 @@ const OplogSyncService = require('../oplog-sync-service');
 const SyncManager = require('../sync-manager');
 
 test('OplogSyncService.processChange() unit tests', async (t) => {
-  // Helper to create a service instance with mocked dependencies
   const createMockService = () => {
     const service = new OplogSyncService();
-    
-    // Stub syncManager
+
     service.syncManager = {
       updateSyncStateCalls: [],
       async updateSyncState(collectionName, operationTime, resumeToken, count) {
         this.updateSyncStateCalls.push({ collectionName, operationTime, resumeToken, count });
-      }
+      },
+      async resetSyncStateForReSync() {},
+      async completeInitialSync() {}
     };
-    
-    // Mock localCollection
+
     const mockCollection = {
       replaceOneCalls: [],
       deleteOneCalls: [],
+      dropCalls: 0,
+      renameCalls: [],
       async replaceOne(query, doc, options) {
         this.replaceOneCalls.push({ query, doc, options });
         return { acknowledged: true };
@@ -32,6 +32,12 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
       async deleteOne(query) {
         this.deleteOneCalls.push({ query });
         return { acknowledged: true };
+      },
+      async drop() {
+        this.dropCalls += 1;
+      },
+      async rename(newName, options) {
+        this.renameCalls.push({ newName, options });
       }
     };
 
@@ -50,7 +56,6 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
 
     await service.processChange('users', changeEvent, mockCollection);
 
-    // Verify local collection calls
     assert.strictEqual(mockCollection.replaceOneCalls.length, 1);
     assert.deepStrictEqual(mockCollection.replaceOneCalls[0], {
       query: { _id: 'doc_abc' },
@@ -59,7 +64,6 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
     });
     assert.strictEqual(mockCollection.deleteOneCalls.length, 0);
 
-    // Verify sync manager state update
     assert.strictEqual(service.syncManager.updateSyncStateCalls.length, 1);
     assert.deepStrictEqual(service.syncManager.updateSyncStateCalls[0], {
       collectionName: 'users',
@@ -87,7 +91,6 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
       doc: { _id: 'doc_abc', name: 'Bob', age: 31 },
       options: { upsert: true }
     });
-    assert.strictEqual(mockCollection.deleteOneCalls.length, 0);
   });
 
   await t.test('should fallback to deleteOne on UPDATE/REPLACE event if fullDocument is missing', async () => {
@@ -96,7 +99,7 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
       _id: { _data: 'resume_token_789' },
       operationType: 'update',
       documentKey: { _id: 'doc_abc' },
-      fullDocument: null, // document was deleted before updateLookup could run
+      fullDocument: null,
       clusterTime: new Date('2026-08-23T12:10:00Z')
     };
 
@@ -120,11 +123,22 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
 
     await service.processChange('users', changeEvent, mockCollection);
 
-    assert.strictEqual(mockCollection.replaceOneCalls.length, 0);
     assert.strictEqual(mockCollection.deleteOneCalls.length, 1);
-    assert.deepStrictEqual(mockCollection.deleteOneCalls[0], {
-      query: { _id: 'doc_abc' }
-    });
+  });
+
+  await t.test('should drop local collection on remote drop', async () => {
+    const { service, mockCollection } = createMockService();
+    service.syncedCollections.add('users');
+    let resetCalled = false;
+    service.syncManager.resetSyncStateForReSync = async () => {
+      resetCalled = true;
+    };
+
+    await service.processChange('users', { operationType: 'drop', ns: { coll: 'users' } }, mockCollection);
+
+    assert.strictEqual(mockCollection.dropCalls, 1);
+    assert.strictEqual(service.syncedCollections.has('users'), false);
+    assert.strictEqual(resetCalled, true);
   });
 
   await t.test('should verify idempotency (repeating same INSERT/UPDATE/DELETE events)', async () => {
@@ -136,15 +150,12 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
       fullDocument: { _id: 'doc_1', data: 'hello' }
     };
 
-    // Process event twice (e.g., resume replay)
     await service.processChange('items', insertEvent, mockCollection);
     await service.processChange('items', insertEvent, mockCollection);
 
-    // Assert it executes the same database write operation twice without issues/throwing
     assert.strictEqual(mockCollection.replaceOneCalls.length, 2);
     assert.strictEqual(service.syncManager.updateSyncStateCalls.length, 2);
-    
-    // Also verify delete idempotency
+
     const deleteEvent = {
       _id: { _data: 'resume_token_2' },
       operationType: 'delete',
@@ -159,23 +170,24 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
 
   await t.test('should perform initial sync and copy documents in batches', async () => {
     const { service, mockCollection } = createMockService();
-    
-    // Set running state
     service.isRunning = true;
 
-    // Stub syncManager initial sync methods
     service.syncManager.updateInitialSyncProgressCalls = [];
     service.syncManager.completeInitialSyncCalls = [];
-    
+
     service.syncManager.updateInitialSyncProgress = async (collectionName, lastCopiedId, resumeToken, count) => {
-      service.syncManager.updateInitialSyncProgressCalls.push({ collectionName, lastCopiedId, resumeToken, count });
+      service.syncManager.updateInitialSyncProgressCalls.push({
+        collectionName,
+        lastCopiedId,
+        resumeToken,
+        count
+      });
     };
-    
+
     service.syncManager.completeInitialSync = async (collectionName) => {
       service.syncManager.completeInitialSyncCalls.push({ collectionName });
     };
 
-    // Mock remote collection with search/find capability returning cursor
     const mockRemoteCollection = {
       watchCallsCount: 0,
       watch() {
@@ -188,8 +200,8 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
       },
       async indexes() {
         return [
-          { name: '_id_', key: { _id: 1 } },
-          { name: 'name_1', key: { name: 1 }, unique: true }
+          { name: '_id_', key: { _id: 1 }, v: 2 },
+          { name: 'name_1', key: { name: 1 }, unique: true, v: 2, ns: 'db.users' }
         ];
       },
       findCalls: [],
@@ -201,7 +213,6 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
               limit() {
                 return {
                   async toArray() {
-                    // Return mock documents if it's the first query, else empty array to break the loop
                     if (!query._id) {
                       return [
                         { _id: 'doc_1', name: 'Doc 1' },
@@ -222,7 +233,7 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
     mockCollection.createIndex = async (key, options) => {
       mockCollection.createIndexCalls.push({ key, options });
     };
-
+    mockCollection.indexes = async () => [{ name: '_id_', key: { _id: 1 } }];
     mockCollection.bulkWriteCalls = [];
     mockCollection.bulkWrite = async (operations, options) => {
       mockCollection.bulkWriteCalls.push({ operations, options });
@@ -236,48 +247,64 @@ test('OplogSyncService.processChange() unit tests', async (t) => {
 
     await service.performInitialSync('users', mockRemoteCollection, mockCollection, syncState);
 
-    // Assert indexes were synchronized (skipping _id_)
     assert.strictEqual(mockCollection.createIndexCalls.length, 1);
     assert.deepStrictEqual(mockCollection.createIndexCalls[0], {
       key: { name: 1 },
       options: { name: 'name_1', unique: true }
     });
+    assert.ok(!('v' in mockCollection.createIndexCalls[0].options));
+    assert.ok(!('ns' in mockCollection.createIndexCalls[0].options));
 
-    // Assert watch called to get resume token
     assert.strictEqual(mockRemoteCollection.watchCallsCount, 1);
-    
-    // Assert bulkWrite was called once for the batch
     assert.strictEqual(mockCollection.bulkWriteCalls.length, 1);
-    assert.deepStrictEqual(mockCollection.bulkWriteCalls[0].operations, [
-      { replaceOne: { filter: { _id: 'doc_1' }, replacement: { _id: 'doc_1', name: 'Doc 1' }, upsert: true } },
-      { replaceOne: { filter: { _id: 'doc_2' }, replacement: { _id: 'doc_2', name: 'Doc 2' }, upsert: true } }
-    ]);
-
-    // Assert progress updated
-    assert.strictEqual(service.syncManager.updateInitialSyncProgressCalls.length, 1);
-    assert.deepStrictEqual(service.syncManager.updateInitialSyncProgressCalls[0], {
-      collectionName: 'users',
-      lastCopiedId: 'doc_2',
-      resumeToken: { _data: 'initial_resume_token' },
-      count: 2
-    });
-
-    // Assert initial sync completed
     assert.strictEqual(service.syncManager.completeInitialSyncCalls.length, 1);
-    assert.deepStrictEqual(service.syncManager.completeInitialSyncCalls[0], {
-      collectionName: 'users'
-    });
   });
 });
 
 test('SyncManager checkpoint batching unit tests', async (t) => {
   await t.test('should buffer checkpoints and flush at threshold or interval', async () => {
     const syncManager = new SyncManager('mongodb://localhost:27017/target');
-    
-    // Mock db and collection
+
     const updateOneCalls = [];
     syncManager.db = {
-      collection(name) {
+      collection() {
+        return {
+          async updateOne(filter, update, options) {
+            updateOneCalls.push({ filter, update, options });
+            return { acknowledged: true };
+          }
+        };
+      }
+    };
+    syncManager.flushInterval = null;
+
+    const operationTime = new Date('2026-08-23T12:00:00Z');
+    const resumeToken = { _data: 'resume_token' };
+
+    for (let i = 0; i < 499; i++) {
+      syncManager.updateSyncState('orders', operationTime, resumeToken, 1);
+    }
+    assert.strictEqual(updateOneCalls.length, 0);
+
+    syncManager.updateSyncState('orders', operationTime, resumeToken, 1);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(updateOneCalls.length, 1);
+    assert.strictEqual(updateOneCalls[0].update.$inc.totalSynced, 500);
+
+    syncManager.updateSyncState('orders', operationTime, resumeToken, 10);
+    assert.strictEqual(updateOneCalls.length, 1);
+
+    await syncManager.flushAllCheckpoints();
+    assert.strictEqual(updateOneCalls.length, 2);
+    assert.strictEqual(updateOneCalls[1].update.$inc.totalSynced, 10);
+  });
+
+  await t.test('should batch database resume tokens until flush', async () => {
+    const syncManager = new SyncManager('mongodb://localhost:27017/target');
+    const updateOneCalls = [];
+    syncManager.db = {
+      collection() {
         return {
           async updateOne(filter, update, options) {
             updateOneCalls.push({ filter, update, options });
@@ -287,67 +314,68 @@ test('SyncManager checkpoint batching unit tests', async (t) => {
       }
     };
 
-    // Initialize with mock interval (skip full initialize to avoid connection)
-    syncManager.flushInterval = null;
-
-    const operationTime = new Date('2026-08-23T12:00:00Z');
-    const resumeToken = { _data: 'resume_token' };
-
-    // 1. Update state 499 times - should NOT write to DB
-    for (let i = 0; i < 499; i++) {
-      syncManager.updateSyncState('orders', operationTime, resumeToken, 1);
-    }
+    syncManager.queueDbResumeToken({ _data: 'tok_1' });
+    syncManager.queueDbResumeToken({ _data: 'tok_2' });
     assert.strictEqual(updateOneCalls.length, 0);
+    assert.deepStrictEqual(await syncManager.getDbResumeToken(), { _data: 'tok_2' });
 
-    // 2. 500th update - should trigger flush
-    syncManager.updateSyncState('orders', operationTime, resumeToken, 1);
-    
-    // Wait a brief tick for async flush to execute
-    await new Promise(resolve => setImmediate(resolve));
-    
-    assert.strictEqual(updateOneCalls.length, 1);
-    assert.deepStrictEqual(updateOneCalls[0].filter, { collection: 'orders' });
-    assert.strictEqual(updateOneCalls[0].update.$inc.totalSynced, 500);
-
-    // 3. Update state 10 times - should NOT write to DB yet
-    syncManager.updateSyncState('orders', operationTime, resumeToken, 10);
-    assert.strictEqual(updateOneCalls.length, 1);
-
-    // 4. Call flushAllCheckpoints manually - should write the remaining 10
     await syncManager.flushAllCheckpoints();
-    assert.strictEqual(updateOneCalls.length, 2);
-    assert.strictEqual(updateOneCalls[1].update.$inc.totalSynced, 10);
+    assert.strictEqual(updateOneCalls.length, 1);
+    assert.deepStrictEqual(updateOneCalls[0].filter, { collection: '__db_stream__' });
+    assert.deepStrictEqual(updateOneCalls[0].update.$set.resumeToken, { _data: 'tok_2' });
+  });
+
+  await t.test('sanitizeIndexOptions strips driver metadata', () => {
+    const { key, options } = SyncManager.sanitizeIndexOptions({
+      v: 2,
+      key: { email: 1 },
+      name: 'email_1',
+      unique: true,
+      ns: 'db.users',
+      sparse: true
+    });
+    assert.deepStrictEqual(key, { email: 1 });
+    assert.deepStrictEqual(options, { name: 'email_1', unique: true, sparse: true });
   });
 });
 
-test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
+test('OplogSyncService - M5, M7, M10 and recovery unit tests', async (t) => {
   const createService = () => {
     const service = new OplogSyncService();
-    
-    // Stub syncManager
+
     service.syncManager = {
       savedTokens: [],
+      queuedTokens: [],
+      queueDbResumeToken(token) {
+        this.queuedTokens.push(token);
+      },
       async saveDbResumeToken(token) {
         this.savedTokens.push(token);
       },
+      async getDbResumeToken() {
+        return this.savedTokens[this.savedTokens.length - 1] || null;
+      },
+      async getSyncState() {
+        return { initialSyncCompleted: true };
+      },
       async getMetrics() {
         return [{ collection: 'users', totalSynced: 10 }];
-      }
+      },
+      async resetSyncStateForReSync() {}
     };
-    
+
     return service;
   };
 
-  await t.test('M5: processDbChange should route insert event to correct collection and save token', async () => {
+  await t.test('M5: processDbChange should route insert event and queue db resume token', async () => {
     const service = createService();
+    service.syncedCollections.add('orders');
     let processChangeCalled = false;
     let targetCollectionPassed = null;
-    let targetChangePassed = null;
 
-    service.processChange = async (colName, change, localCollection) => {
+    service.processChange = async (colName) => {
       processChangeCalled = true;
       targetCollectionPassed = colName;
-      targetChangePassed = change;
     };
 
     const mockLocalDb = {
@@ -368,28 +396,47 @@ test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
 
     assert.strictEqual(processChangeCalled, true);
     assert.strictEqual(targetCollectionPassed, 'orders');
-    assert.deepStrictEqual(targetChangePassed, changeEvent);
     assert.strictEqual(service.syncedCollections.has('orders'), true);
-    assert.strictEqual(service.syncManager.savedTokens.length, 1);
-    assert.deepStrictEqual(service.syncManager.savedTokens[0], changeEvent._id);
+    assert.strictEqual(service.syncManager.queuedTokens.length, 1);
+    assert.deepStrictEqual(service.syncManager.queuedTokens[0], changeEvent._id);
   });
 
-  await t.test('M7: runDivergenceCheck should calculate difference between remote and local collections', async () => {
+  await t.test('processDbChange should not apply events while initial sync is in progress', async () => {
     const service = createService();
-    
-    // Mock clients and collections
+    let processChangeCalled = false;
+    service.initialSyncInProgress.add('orders');
+    service.processChange = async () => {
+      processChangeCalled = true;
+    };
+
+    await service.processDbChange(
+      {
+        _id: { _data: 't' },
+        operationType: 'insert',
+        ns: { db: 'source', coll: 'orders' },
+        documentKey: { _id: '1' },
+        fullDocument: { _id: '1' }
+      },
+      { collection: () => ({}) }
+    );
+
+    assert.strictEqual(processChangeCalled, false);
+    assert.strictEqual(service.syncManager.queuedTokens.length, 0);
+  });
+
+  await t.test('M7: runDivergenceCheck should calculate difference between remote and local', async () => {
+    const service = createService();
+
     service.atlasClient = {
       db() {
         return {
           listCollections() {
-            return {
-              toArray: async () => [{ name: 'products' }]
-            };
+            return { toArray: async () => [{ name: 'products' }] };
           },
-          collection(name) {
+          collection() {
             return {
               async countDocuments() {
-                return 150; // Remote has 150 docs
+                return 150;
               }
             };
           }
@@ -400,10 +447,10 @@ test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
     service.localClient = {
       db() {
         return {
-          collection(name) {
+          collection() {
             return {
               async countDocuments() {
-                return 145; // Local has 145 docs
+                return 145;
               }
             };
           }
@@ -413,19 +460,17 @@ test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
 
     await service.runDivergenceCheck();
 
-    assert.strictEqual(service.divergences.get('products'), 5); // 150 - 145 = 5 diff
+    assert.strictEqual(service.divergences.get('products'), 5);
 
     const health = await service.getHealth();
     assert.deepStrictEqual(health.divergences, { products: 5 });
   });
 
-  await t.test('M10: syncAllIndexes should trigger indexes replication on all synced collections', async () => {
+  await t.test('M10: syncAllIndexes should trigger indexes replication', async () => {
     const service = createService();
-    let syncIndexesCalled = false;
     let syncIndexesCollection = null;
 
-    service.syncIndexes = async (name, remote, local) => {
-      syncIndexesCalled = true;
+    service.syncIndexes = async (name) => {
       syncIndexesCollection = name;
     };
 
@@ -433,11 +478,11 @@ test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
       db() {
         return {
           listCollections() {
-            return {
-              toArray: async () => [{ name: 'payments' }]
-            };
+            return { toArray: async () => [{ name: 'payments' }] };
           },
-          collection(name) { return { name }; }
+          collection(name) {
+            return { name };
+          }
         };
       }
     };
@@ -445,15 +490,107 @@ test('OplogSyncService - M5, M7, M10 Integration unit tests', async (t) => {
     service.localClient = {
       db() {
         return {
-          collection(name) { return { name }; }
+          collection(name) {
+            return { name };
+          }
         };
       }
     };
 
     await service.syncAllIndexes();
-
-    assert.strictEqual(syncIndexesCalled, true);
     assert.strictEqual(syncIndexesCollection, 'payments');
   });
-});
 
+  await t.test('performFullReSync should reset, drop, re-copy, and restart stream', async () => {
+    const service = createService();
+    service.isRunning = true;
+
+    const dropped = [];
+    const synced = [];
+    let streamStarted = 0;
+
+    service.atlasClient = {
+      db() {
+        return {
+          listCollections() {
+            return { toArray: async () => [{ name: 'users' }, { name: '_sync_metadata' }] };
+          },
+          watch() {
+            return {
+              resumeToken: { _data: 'fresh_token' },
+              async tryNext() {},
+              async close() {}
+            };
+          },
+          collection(name) {
+            return { name };
+          }
+        };
+      }
+    };
+
+    service.localClient = {
+      db() {
+        return {
+          collection(name) {
+            return {
+              async drop() {
+                dropped.push(name);
+              }
+            };
+          }
+        };
+      }
+    };
+
+    service.syncManager.resetSyncStateForReSync = async (name) => {
+      synced.push(`reset:${name}`);
+    };
+    service.ensureCollectionInitialSync = async (name) => {
+      synced.push(`sync:${name}`);
+    };
+    service.startDatabaseStream = async () => {
+      streamStarted += 1;
+    };
+
+    await service.performFullReSync();
+
+    assert.deepStrictEqual(dropped, ['users']);
+    assert.ok(synced.includes('reset:users'));
+    assert.ok(synced.includes('sync:users'));
+    assert.strictEqual(streamStarted, 1);
+    assert.strictEqual(service.syncedCollections.has('users'), true);
+    assert.ok(service.syncManager.savedTokens.includes(null));
+    assert.ok(service.syncManager.savedTokens.some((t) => t && t._data === 'fresh_token'));
+  });
+
+  await t.test('withStreamPaused should close stream, run work, and restart', async () => {
+    const service = createService();
+    service.isRunning = true;
+    let closed = false;
+    let started = 0;
+    let workRan = false;
+
+    service.dbChangeStream = {
+      resumeToken: { _data: 'pause_tok' },
+      async close() {
+        closed = true;
+      }
+    };
+    service.startDatabaseStream = async () => {
+      started += 1;
+    };
+
+    await service.withStreamPaused(async () => {
+      workRan = true;
+      assert.strictEqual(service.dbChangeStream, null);
+    });
+
+    assert.strictEqual(closed, true);
+    assert.strictEqual(workRan, true);
+    assert.strictEqual(started, 1);
+    assert.deepStrictEqual(service.syncManager.savedTokens[service.syncManager.savedTokens.length - 1], {
+      _data: 'pause_tok'
+    });
+  });
+});

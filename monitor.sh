@@ -1,12 +1,14 @@
 #!/bin/bash
+set -euo pipefail
 
-# Load environment variables from .env file if it exists to get the correct PORT
+# Load .env safely (handles spaces/special chars better than xargs)
 if [ -f .env ]; then
-  # Sourcing .env safely without breaking on comments or spaces
-  export $(grep -v '^#' .env | xargs)
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
 fi
 
-# Use the PORT from .env, or fallback to 3000
 SERVICE_PORT=${PORT:-3000}
 
 clear
@@ -21,7 +23,7 @@ echo "4) Check Service Health API (JSON status)"
 echo "5) View Live Sync metrics (Prometheus format)"
 echo "6) Exit"
 echo "=========================================================="
-read -p "Enter choice [1-6]: " choice
+read -r -p "Enter choice [1-6]: " choice
 
 case $choice in
   1)
@@ -39,17 +41,17 @@ case $choice in
     docker compose exec sync sh -c "tail -f /app/logs/errors/$DATE_STR.log 2>/dev/null || echo 'No error log file found for today ($DATE_STR).'"
     ;;
   4)
-    echo "Fetching service health from http://localhost:$SERVICE_PORT/health..."
+    echo "Fetching service health from http://127.0.0.1:$SERVICE_PORT/health..."
     if command -v jq &> /dev/null; then
-      curl -s http://localhost:$SERVICE_PORT/health | jq .
+      curl -s "http://127.0.0.1:$SERVICE_PORT/health" | jq .
     else
-      curl -s http://localhost:$SERVICE_PORT/health
+      curl -s "http://127.0.0.1:$SERVICE_PORT/health"
       echo -e "\nNote: Install 'jq' on your host for formatted JSON output."
     fi
     ;;
   5)
-    echo "Fetching live metrics from http://localhost:$SERVICE_PORT/metrics..."
-    curl -s http://localhost:$SERVICE_PORT/metrics
+    echo "Fetching live metrics from http://127.0.0.1:$SERVICE_PORT/metrics..."
+    curl -s "http://127.0.0.1:$SERVICE_PORT/metrics"
     ;;
   6)
     echo "Exiting."

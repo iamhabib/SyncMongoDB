@@ -19,8 +19,6 @@ class DailyFileTransport extends winston.Transport {
     this.retentionDays = options.retentionDays || 60;
     this.currentDate = this.getFormattedDate();
     this.stream = this.createStream();
-    
-    // Run cleanup on initialization
     this.cleanupOldLogs();
   }
 
@@ -58,9 +56,7 @@ class DailyFileTransport extends winston.Transport {
     source.pipe(gzip).pipe(destination);
 
     destination.on('finish', () => {
-      fs.unlink(filepath, (err) => {
-        // Handle error silently
-      });
+      fs.unlink(filepath, () => {});
     });
 
     source.on('error', () => {});
@@ -85,7 +81,7 @@ class DailyFileTransport extends winston.Transport {
         }
       }
     } catch (err) {
-      // Fail silently
+      // Fail silently — logging must not crash the process
     }
   }
 
@@ -97,10 +93,7 @@ class DailyFileTransport extends winston.Transport {
       const oldDate = this.currentDate;
       this.currentDate = dateStr;
       this.stream.end();
-      
-      // Compress the completed day's file
       this.compressLogFile(oldDate);
-
       this.stream = this.createStream();
       this.cleanupOldLogs();
     }
@@ -126,10 +119,7 @@ const logger = winston.createLogger({
   format: logFormat,
   transports: [
     new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        logFormat
-      )
+      format: winston.format.combine(winston.format.colorize(), logFormat)
     }),
     new DailyFileTransport({
       subDir: 'combined',
@@ -138,10 +128,6 @@ const logger = winston.createLogger({
     new DailyFileTransport({
       subDir: 'errors',
       level: 'error',
-      retentionDays: 60
-    }),
-    new DailyFileTransport({
-      subDir: 'operations',
       retentionDays: 60
     })
   ]

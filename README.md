@@ -1,21 +1,22 @@
 # MongoDB Remote → Local Change Stream Sync
 
-Production-grade sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) into a local/self-hosted MongoDB instance, in real time, using **Change Streams** and an automatic **Initial Sync** engine. No `updatedAt` field is required — progress is tracked via Change Stream resume tokens and keyset pagination metadata stored in the `_sync_metadata` collection on the target database.
+Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) into a local/self-hosted MongoDB instance in near real time, using **Change Streams** plus an automatic **initial sync**. Progress is tracked via Change Stream resume tokens and keyset pagination metadata in the `_sync_metadata` collection on the target database.
+
+> **Requirement:** the remote deployment must support Change Streams (replica set or sharded cluster / Atlas). Standalone MongoDB is not supported as a source.
 
 ## Architecture & Production Features
 
-1. **Database-level Change Stream (M5)**: Watch the entire database via a single `db.watch()` stream. This guarantees that multi-collection transactions are applied locally in their exact causal order.
-2. **Automated Initial Sync**: If a collection has not been synced, the service automatically copies all pre-existing documents in batches before subscribing to the database stream.
-3. **Resumable Keyset Batching**: Uses keyset pagination (`_id > lastId` sorted by `_id`) to perform initial syncs efficiently on large collections (5GB+) without memory bloat. If the service restarts, it resumes copying exactly where it left off.
-4. **High-Throughput Checkpoint Batching**: Accumulates sync checkpoints in memory and flushes them to `_sync_metadata` in batches of 500 events or every 2 seconds (whichever comes first), boosting maximum sync throughput from ~2k events/sec to 20k+ events/sec.
-5. **Periodic Schema and Count Reconciliation (M7, M10)**: Runs a periodic reconciliation loop (defaulting to every 6 hours) that compares source vs target document counts and replicates any newly added indexes to resolve schema and data drift.
-6. **Race-Condition Prevention**: Captures the database-level starting resume token *before* executing the initial data copy. Once the initial copy completes, the stream starts from that token, applying modifications made during the copy phase.
-7. **DDL Event Propagation**: Monitors `drop`, `rename`, and `invalidate` events, dynamically reflecting structural schema changes (dropping/renaming local collections) to keep collections in perfect sync.
-8. **Dynamic Collection Discovery**: Runs a background poll every 60 seconds to detect newly created remote collections, automatically triggering their index replication and initial sync with zero downtime.
-9. **Active Connection & Stream Health Checks**: Executes deep health checks using `admin().ping()` on both databases. Returns HTTP `200 OK` with a `"degraded"` status if any collection fails permanently, keeping the service alive to process other healthy streams while notifying operators.
-10. **Prometheus Metrics lag and drift monitoring**: Exposes real-time sync metrics at `/metrics` in standard Prometheus text format, including `mongodb_sync_lag_seconds` and `mongodb_sync_divergence_count` per collection.
-11. **Database Security Hardening**: The local MongoDB target is protected via username/password root authentication and its host port is bound strictly to `127.0.0.1` to prevent unauthorized public interface access.
-12. **Daily Log Rotation & Gzip Compression**: Organizes logs into daily folders (`combined/`, `errors/`, `operations/`), automatically compresses the previous day's log to `.log.gz` asynchronously, enforces a 60-day retention cleanup, and applies Docker daemon log size capping (30MB max per container).
+1. **Database-level Change Stream**: One `db.watch()` stream so multi-collection transactions stay in causal order locally.
+2. **Automated Initial Sync**: Unsynced collections are copied in `_id` keyset batches before (or with the stream paused around) live apply.
+3. **Resumable Keyset Batching**: Initial sync uses `{ _id: { $gt: lastId } }` and checkpoints `lastCopiedId` so restarts continue mid-copy.
+4. **Checkpoint Batching**: Per-collection checkpoints and the DB-level resume token are buffered in memory and flushed every 500 events or 2 seconds to keep the hot path off the metadata collection.
+5. **Resume-token expiry recovery**: If the resume point leaves the oplog (or the stream is invalidated), the service clears state, drops local user collections, re-copies from a fresh token, then restarts the stream — it does not silently skip the gap.
+6. **Safe dynamic discovery**: New remote collections pause the stream, capture a resume token, run initial sync, then restart from that token so copy and live events do not race.
+7. **DDL propagation**: Handles `drop` / `rename` / `invalidate` and updates local metadata accordingly.
+8. **Periodic reconciliation**: Every 6 hours (configurable) compares remote vs local document counts and re-applies indexes (create missing, drop obsolete). Count divergence is **detect-only** by default; set `AUTO_REPAIR_ON_DIVERGENCE=true` to drop and fully re-sync drifted collections.
+9. **Health & metrics**: `/health` (JSON) and `/metrics` (Prometheus). Status can be `healthy`, `syncing`, `degraded`, `initializing`, or `unhealthy`.
+10. **Hardened local target**: Root auth required (no compose password default). Mongo and health ports bind to `127.0.0.1` on the host.
+11. **Daily log rotation**: `combined/` and `errors/` under the log volume, gzip of prior days, 60-day retention, Docker json-file caps (10m × 3).
 
 ---
 
@@ -23,19 +24,20 @@ Production-grade sync service that mirrors collection changes from a remote Mong
 
 ```
 .
-├── docker-compose.yml         # spins up local hardened mongo + sync service
-├── .env.example               # copy to .env and fill in your values
+├── docker-compose.yml
+├── .env.example
 ├── README.md
-└── mongodb-sync/              # sync service source
-    ├── app.js                   # entry point + graceful shutdown
-    ├── oplog-sync-service.js    # Database-level Change Stream, initial sync & index engine
-    ├── sync-manager.js          # database and collection metadata tracker
-    ├── health-server.js         # active /health and /metrics endpoints
-    ├── logger.js                # daily rotating + gzipped winston logs
-    ├── Dockerfile               # production container (non-root, healthcheck)
+├── monitor.sh
+└── mongodb-sync/
+    ├── app.js
+    ├── oplog-sync-service.js
+    ├── sync-manager.js
+    ├── health-server.js
+    ├── logger.js
+    ├── Dockerfile
     ├── package.json
     └── test/
-        └── sync-service.test.js # unit tests (node:test)
+        └── sync-service.test.js
 ```
 
 ---
@@ -46,8 +48,8 @@ Production-grade sync service that mirrors collection changes from a remote Mong
    ```bash
    cp .env.example .env
    ```
-2. Edit `.env` to configure your connection strings and database names. Make sure to set a secure `LOCAL_MONGO_ROOT_PASSWORD`.
-3. Spin up the containers:
+2. Edit `.env`: set a strong `LOCAL_MONGO_ROOT_PASSWORD` and your `REMOTE_MONGODB_URL` / database name.
+3. Start:
    ```bash
    docker compose up -d --build
    ```
@@ -59,41 +61,37 @@ Production-grade sync service that mirrors collection changes from a remote Mong
 | Variable | Description | Default |
 |---|---|---|
 | `MONGO_DATABASE_NAME` | Database name to sync | `sync_db` |
-| `LOCAL_MONGO_PORT` | Host port for the local MongoDB container | `27017` |
-| `MONGO_IMAGE` | Docker image version for the local target MongoDB service | `mongo:7` |
-| `LOCAL_MONGO_ROOT_USER` | Admin user for the local hardened MongoDB | `admin` |
-| `LOCAL_MONGO_ROOT_PASSWORD` | Admin password for the local hardened MongoDB | *required* |
-| `REMOTE_MONGODB_URL` | Remote connection string. Supports `{MONGO_DATABASE_NAME}` placeholder | *required* |
-| `LOCAL_MONGO_URL` | Local connection string. Supports `{LOCAL_MONGO_ROOT_USER}`, `{LOCAL_MONGO_ROOT_PASSWORD}`, `{LOCAL_MONGO_PORT}`, and `{MONGO_DATABASE_NAME}` placeholders | *required* |
-| `PORT` | HTTP port for the health/metrics server | `3000` |
-| `LOG_LEVEL` | Winston log level (`debug`, `info`, `warn`, `error`) | `info` |
-| `MAX_RETRIES` | Max retry attempts per database stream error | `10` |
-| `RETRY_DELAY_MS` | Delay between retries in milliseconds | `5000` |
-| `DIVERGENCE_CHECK_INTERVAL_MS` | Interval in ms between count reconciliation and index replication loops | `21600000` (6 hrs) |
+| `LOCAL_MONGO_PORT` | Host port for local MongoDB | `27017` |
+| `MONGO_IMAGE` | Local MongoDB image | `mongo:7` |
+| `LOCAL_MONGO_ROOT_USER` | Local Mongo root user | *required* |
+| `LOCAL_MONGO_ROOT_PASSWORD` | Local Mongo root password | *required* |
+| `REMOTE_MONGODB_URL` | Remote connection string (`{MONGO_DATABASE_NAME}` ok) | *required* |
+| `LOCAL_MONGO_URL` | Local connection string (placeholders supported) | *required* |
+| `PORT` | Health/metrics port | `3000` |
+| `HEALTH_BIND_HOST` | Bind address inside the container (`0.0.0.0` in Compose) | `127.0.0.1` |
+| `LOG_LEVEL` | Winston level | `info` |
+| `MAX_RETRIES` | Retries for transient stream errors before marking failed | `10` |
+| `RETRY_DELAY_MS` | Delay between retries | `5000` |
+| `DISCOVERY_INTERVAL_MS` | New-collection poll interval | `60000` |
+| `DIVERGENCE_CHECK_INTERVAL_MS` | Count + index reconciliation interval | `21600000` (6h) |
+| `AUTO_REPAIR_ON_DIVERGENCE` | If `true`, re-sync collections whose count drift ≥ threshold | `false` |
+| `DIVERGENCE_REPAIR_THRESHOLD` | Minimum `|remote−local|` count to trigger auto-repair | `1` |
 
 ---
 
 ## Verification & Monitoring
 
-We have provided a helper CLI script `monitor.sh` in the root directory to easily monitor your live sync service. 
-
-Run it directly from the host:
 ```bash
 ./monitor.sh
 ```
 
-Alternatively, you can query endpoints and tail logs manually:
+Or manually:
+
 ```bash
-# Check the status of the sync service and database connectivity
-curl http://localhost:3000/health
-
-# View live Prometheus metrics (lag, counts, drift)
-curl http://localhost:3000/metrics
-
-# Tail live container logs directly
+curl http://127.0.0.1:3000/health
+curl http://127.0.0.1:3000/metrics
 docker compose logs -f sync
 ```
-
 
 ---
 
@@ -101,7 +99,14 @@ docker compose logs -f sync
 
 ```bash
 cd mongodb-sync
-npm install
+npm ci
 npm test
 ```
 
+---
+
+## Operational notes
+
+- Collections whose names start with `_` (including `_sync_metadata`) and `system.*` are not synced from the remote.
+- After a long outage, if the change stream resume token has fallen off the oplog, expect a **full re-sync** (local user collections dropped and recopied). Size capacity and oplog window accordingly.
+- Prefer keeping `AUTO_REPAIR_ON_DIVERGENCE=false` unless you accept periodic full collection rebuilds when counts disagree (counts alone are a coarse signal).
