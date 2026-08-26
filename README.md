@@ -86,7 +86,7 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
 
 ## Monitoring (`monitor.sh`)
 
-Interactive helper for live logs, health, and Prometheus metrics. Uses `PORT` from `.env` (default `3000`).
+Interactive helper for live sync watch, logs, health/metrics, and local DB queries. Uses `.env` (`PORT`, Mongo credentials).
 
 ```bash
 chmod +x monitor.sh
@@ -95,14 +95,26 @@ chmod +x monitor.sh
 
 | Option | What it does |
 |--------|----------------|
-| `1` | Tail sync container stdout/stderr (`docker compose logs -f sync`) |
-| `2` | Tail today's combined log under `LOGS/combined/` (via the container) |
-| `3` | Tail today's error log under `LOGS/errors/` |
-| `4` | `GET /health` — JSON status (`healthy` / `syncing` / `degraded` / …); uses `jq` if installed |
-| `5` | `GET /metrics` — Prometheus text (lag, sync counts, divergence) |
-| `6` | Exit |
+| `1` | Tail sync container stdout/stderr |
+| `2` | Tail today's `LOGS/combined/` file (**does not** show each doc at default `LOG_LEVEL=info`) |
+| `3` | Tail today's error log |
+| `4` | `GET /health` JSON |
+| `5` | `GET /metrics` once (Prometheus) |
+| `6` | **Watch live sync counters** — polls health; `totalSynced` rises when source changes replicate |
+| `7` | Watch replication log lines (set `LOG_REPLICATION_EVENTS=true` in `.env`, recreate sync) |
+| `8` | **Query local DB** — collection counts, samples, or custom `mongosh` JS |
+| `9` | Exit |
 
-Equivalent manual checks (health/metrics are bound to localhost on the host):
+To see each INSERT/UPDATE/DELETE in option `7`:
+
+```bash
+# in .env
+LOG_REPLICATION_EVENTS=true
+docker compose up -d sync
+./monitor.sh   # choose 7
+```
+
+Equivalent manual checks:
 
 ```bash
 curl http://127.0.0.1:3000/health

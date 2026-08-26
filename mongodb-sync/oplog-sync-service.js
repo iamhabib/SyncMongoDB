@@ -9,6 +9,9 @@ const DISCOVERY_INTERVAL_MS = parseInt(process.env.DISCOVERY_INTERVAL_MS || '600
 const DIVERGENCE_CHECK_INTERVAL_MS = parseInt(process.env.DIVERGENCE_CHECK_INTERVAL_MS || '21600000', 10);
 const AUTO_REPAIR_ON_DIVERGENCE = String(process.env.AUTO_REPAIR_ON_DIVERGENCE || 'false').toLowerCase() === 'true';
 const DIVERGENCE_REPAIR_THRESHOLD = parseInt(process.env.DIVERGENCE_REPAIR_THRESHOLD || '1', 10);
+/** When true, each applied change is logged at info (handy with monitor.sh option 7). */
+const LOG_REPLICATION_EVENTS =
+  String(process.env.LOG_REPLICATION_EVENTS || 'false').toLowerCase() === 'true';
 
 function interpolateUrl(url) {
   if (!url) return url;
@@ -454,6 +457,16 @@ class OplogSyncService {
     }
   }
 
+  logReplicationEvent(collectionName, operationType, docId, operationTime) {
+    const payload = { docId, timestamp: operationTime };
+    const msg = `[${collectionName}] ${operationType}`;
+    if (LOG_REPLICATION_EVENTS) {
+      logger.info(msg, payload);
+    } else {
+      logger.debug(msg, payload);
+    }
+  }
+
   async processChange(collectionName, change, localCollection) {
     const operationType = change.operationType;
 
@@ -475,7 +488,7 @@ class OplogSyncService {
         case 'insert': {
           const docId = change.documentKey._id;
           await localCollection.replaceOne({ _id: docId }, change.fullDocument, { upsert: true });
-          logger.debug(`[${collectionName}] INSERT`, { docId, timestamp: operationTime });
+          this.logReplicationEvent(collectionName, 'INSERT', docId, operationTime);
           break;
         }
 
@@ -487,14 +500,14 @@ class OplogSyncService {
           } else {
             await localCollection.deleteOne({ _id: docId });
           }
-          logger.debug(`[${collectionName}] UPDATE`, { docId, timestamp: operationTime });
+          this.logReplicationEvent(collectionName, 'UPDATE', docId, operationTime);
           break;
         }
 
         case 'delete': {
           const docId = change.documentKey._id;
           await localCollection.deleteOne({ _id: docId });
-          logger.debug(`[${collectionName}] DELETE`, { docId, timestamp: operationTime });
+          this.logReplicationEvent(collectionName, 'DELETE', docId, operationTime);
           break;
         }
 
