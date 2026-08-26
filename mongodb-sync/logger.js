@@ -5,9 +5,20 @@ const zlib = require('zlib');
 
 const logDir = process.env.LOG_DIR || path.join(__dirname, 'logs');
 
-if (!fs.existsSync(logDir)) {
-  fs.mkdirSync(logDir, { recursive: true });
+function ensureDir(dir) {
+  try {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return true;
+  } catch (err) {
+    // Prefer console-only over crashing the sync process (common with bind mounts)
+    console.error(`[logger] Cannot create log directory ${dir}: ${err.message}`);
+    return false;
+  }
 }
+
+ensureDir(logDir);
 
 // Custom transport for daily rotating files with automatic Gzip compression and retention cleanup
 class DailyFileTransport extends winston.Transport {
@@ -18,8 +29,11 @@ class DailyFileTransport extends winston.Transport {
     this.level = options.level;
     this.retentionDays = options.retentionDays || 60;
     this.currentDate = this.getFormattedDate();
+    this.disabled = false;
     this.stream = this.createStream();
-    this.cleanupOldLogs();
+    if (this.stream) {
+      this.cleanupOldLogs();
+    }
   }
 
   getFormattedDate() {
@@ -31,14 +45,24 @@ class DailyFileTransport extends winston.Transport {
   }
 
   createStream() {
+    if (this.disabled) return null;
+
     const dateStr = this.getFormattedDate();
     const filename = `${dateStr}.log`;
     const dir = path.join(this.dirname, this.subDir);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    if (!ensureDir(dir)) {
+      this.disabled = true;
+      return null;
     }
-    const filepath = path.join(dir, filename);
-    return fs.createWriteStream(filepath, { flags: 'a' });
+
+    try {
+      const filepath = path.join(dir, filename);
+      return fs.createWriteStream(filepath, { flags: 'a' });
+    } catch (err) {
+      console.error(`[logger] Cannot open log file in ${dir}: ${err.message}`);
+      this.disabled = true;
+      return null;
+    }
   }
 
   compressLogFile(date) {
@@ -88,6 +112,11 @@ class DailyFileTransport extends winston.Transport {
   log(info, callback) {
     setImmediate(() => this.emit('logged', info));
 
+    if (this.disabled || !this.stream) {
+      callback();
+      return;
+    }
+
     const dateStr = this.getFormattedDate();
     if (dateStr !== this.currentDate) {
       const oldDate = this.currentDate;
@@ -95,7 +124,14 @@ class DailyFileTransport extends winston.Transport {
       this.stream.end();
       this.compressLogFile(oldDate);
       this.stream = this.createStream();
-      this.cleanupOldLogs();
+      if (this.stream) {
+        this.cleanupOldLogs();
+      }
+    }
+
+    if (!this.stream) {
+      callback();
+      return;
     }
 
     const output = `${info[Symbol.for('message')] || info.message}\n`;
@@ -114,23 +150,33 @@ const logFormat = winston.format.combine(
   })
 );
 
+const transports = [
+  new winston.transports.Console({
+    format: winston.format.combine(winston.format.colorize(), logFormat)
+  })
+];
+
+const combinedTransport = new DailyFileTransport({
+  subDir: 'combined',
+  retentionDays: 60
+});
+if (!combinedTransport.disabled) {
+  transports.push(combinedTransport);
+}
+
+const errorTransport = new DailyFileTransport({
+  subDir: 'errors',
+  level: 'error',
+  retentionDays: 60
+});
+if (!errorTransport.disabled) {
+  transports.push(errorTransport);
+}
+
 const logger = winston.createLogger({
   level: process.env.LOG_LEVEL || 'info',
   format: logFormat,
-  transports: [
-    new winston.transports.Console({
-      format: winston.format.combine(winston.format.colorize(), logFormat)
-    }),
-    new DailyFileTransport({
-      subDir: 'combined',
-      retentionDays: 60
-    }),
-    new DailyFileTransport({
-      subDir: 'errors',
-      level: 'error',
-      retentionDays: 60
-    })
-  ]
+  transports
 });
 
 module.exports = logger;
