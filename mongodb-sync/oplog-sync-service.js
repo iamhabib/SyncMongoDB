@@ -22,6 +22,23 @@ function interpolateUrl(url) {
     .replace(/{LOCAL_MONGO_ROOT_PASSWORD}/g, process.env.LOCAL_MONGO_ROOT_PASSWORD || '');
 }
 
+function resolveLocalMongoUrl() {
+  if (process.env.LOCAL_MONGO_URL) {
+    return interpolateUrl(process.env.LOCAL_MONGO_URL);
+  }
+  const user = process.env.LOCAL_MONGO_ROOT_USER || 'admin';
+  const pass = process.env.LOCAL_MONGO_ROOT_PASSWORD || '';
+  const port = process.env.LOCAL_MONGO_PORT || '27017';
+  const db = process.env.MONGO_DATABASE_NAME || 'sync_db';
+  if (!pass) {
+    throw new Error(
+      'LOCAL_MONGO_URL is not set; provide it, or set LOCAL_MONGO_ROOT_USER / LOCAL_MONGO_ROOT_PASSWORD'
+    );
+  }
+  // Default for local/dev; Docker Compose overrides this to host `mongo:27017`
+  return `mongodb://${encodeURIComponent(user)}:${encodeURIComponent(pass)}@localhost:${port}/${db}?authSource=admin`;
+}
+
 function isUserCollection(name) {
   return name && !name.startsWith('_') && name !== 'system.profile' && !name.startsWith('system.');
 }
@@ -31,12 +48,9 @@ class OplogSyncService {
     if (!process.env.REMOTE_MONGODB_URL) {
       throw new Error('REMOTE_MONGODB_URL is required but not defined in environmental variables');
     }
-    if (!process.env.LOCAL_MONGO_URL) {
-      throw new Error('LOCAL_MONGO_URL is required but not defined in environmental variables');
-    }
 
     const remoteUrl = interpolateUrl(process.env.REMOTE_MONGODB_URL);
-    const localUrl = interpolateUrl(process.env.LOCAL_MONGO_URL);
+    const localUrl = resolveLocalMongoUrl();
 
     this.atlasClient = new MongoClient(remoteUrl);
     this.localClient = new MongoClient(localUrl);

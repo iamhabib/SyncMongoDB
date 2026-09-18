@@ -1,13 +1,16 @@
+# Each install lives in its own folder (e.g. /var/www/db-retail, /var/www/db-pass).
+# Compose project name defaults to the directory name, so containers won't clash.
+# Only host ports (LOCAL_MONGO_PORT, SYNC_AGENT_PORT) must differ across installs on the same EC2.
+
 services:
-  # Local MongoDB — the sync target. Change Streams write here.
   mongo:
-    image: ${MONGO_IMAGE:-mongo:7}
-    container_name: mongo-sync-target
+    image: mongo:7
     restart: unless-stopped
     ports:
-      - "127.0.0.1:${LOCAL_MONGO_PORT:-27017}:27017"
+      # Unique per install on this EC2. Restrict source IPs via Security Group.
+      - "${LOCAL_MONGO_PORT:?Set LOCAL_MONGO_PORT in .env}:27017"
     volumes:
-      - ./DATA_SOURCE:/data/db
+      - ./data:/data/db
     environment:
       MONGO_INITDB_ROOT_USERNAME: ${LOCAL_MONGO_ROOT_USER:?Set LOCAL_MONGO_ROOT_USER in .env}
       MONGO_INITDB_ROOT_PASSWORD: ${LOCAL_MONGO_ROOT_PASSWORD:?Set LOCAL_MONGO_ROOT_PASSWORD in .env}
@@ -23,11 +26,9 @@ services:
         max-size: "10m"
         max-file: "3"
 
-  # Change Stream sync service: remote MongoDB -> local Mongo
   sync:
     build:
       context: ./mongodb-sync
-    container_name: mongodb-oplog-sync
     restart: unless-stopped
     depends_on:
       mongo:
@@ -35,15 +36,15 @@ services:
     env_file:
       - .env
     environment:
-      LOCAL_MONGO_URL: mongodb://${LOCAL_MONGO_ROOT_USER}:${LOCAL_MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DATABASE_NAME:-sync_db}?authSource=admin
+      LOCAL_MONGO_URL: mongodb://${LOCAL_MONGO_ROOT_USER}:${LOCAL_MONGO_ROOT_PASSWORD}@mongo:27017/${MONGO_DATABASE_NAME:?Set MONGO_DATABASE_NAME in .env}?authSource=admin
       HEALTH_BIND_HOST: 0.0.0.0
+      SYNC_AGENT_PORT: ${SYNC_AGENT_PORT:?Set SYNC_AGENT_PORT in .env}
     ports:
-      # Bound to localhost only — do not expose health/metrics publicly
-      - "127.0.0.1:${PORT:-3000}:${PORT:-3000}"
+      - "127.0.0.1:${SYNC_AGENT_PORT}:${SYNC_AGENT_PORT}"
     volumes:
-      - ./LOGS:/app/logs
+      - ./logs:/app/logs
     healthcheck:
-      test: [ "CMD", "node", "-e", "require('http').get('http://127.0.0.1:' + (process.env.PORT || 3000) + '/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))" ]
+      test: [ "CMD", "node", "-e", "require('http').get('http://127.0.0.1:' + (process.env.SYNC_AGENT_PORT || 3000) + '/health', r => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))" ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -56,7 +57,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
+          cpus: "1.0"
           memory: 1024M
         reservations:
           memory: 512M

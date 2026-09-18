@@ -12,10 +12,11 @@ if [ -f .env ]; then
   set +a
 fi
 
-SERVICE_PORT=${PORT:-3000}
+SERVICE_PORT=${SYNC_AGENT_PORT:-${PORT:-3000}}
 DB_NAME=${MONGO_DATABASE_NAME:-sync_db}
 MONGO_USER=${LOCAL_MONGO_ROOT_USER:-admin}
 MONGO_PASS=${LOCAL_MONGO_ROOT_PASSWORD:-}
+INSTALL_LABEL="$(basename "$ROOT_DIR")"
 
 mongosh_eval() {
   local eval_js="$1"
@@ -88,7 +89,7 @@ watch_replication_logs() {
 query_menu() {
   echo
   echo "========== LOCAL DB only (synced copy on this host) =========="
-  echo "Container: mongo-sync-target  |  DB: ${DB_NAME}"
+  echo "Install: ${INSTALL_LABEL}  |  service: mongo  |  DB: ${DB_NAME}"
   echo "This does NOT query Atlas/remote. Only data already replicated here."
   echo "--------------------------------------------------------------"
   echo "1) List collections + counts"
@@ -140,7 +141,7 @@ clear
 echo "=========================================================="
 echo "          MongoDB Sync Service Monitor CLI               "
 echo "=========================================================="
-echo "DB: ${DB_NAME}   health: http://127.0.0.1:${SERVICE_PORT}"
+echo "INSTANCE: ${INSTALL_LABEL}   DB: ${DB_NAME}   health: :${SERVICE_PORT}"
 echo "----------------------------------------------------------"
 echo "1) Tail live container console logs (stdout/stderr)"
 echo "2) Tail daily combined log file (LOGS/combined)"

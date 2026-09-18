@@ -5,15 +5,14 @@ mongodb-sync/node_modules/
 # Environment Configuration
 .env
 
+# Local MongoDB data (Compose volume ./data)
+data/
+
 # Logs
 *.log
 *.log.gz
-LOGS/
+logs/
 mongodb-sync/logs/
 
-# Local Database Data
-DATA_SOURCE/
-
-# Shipment archives
-shipments/
-
+# Dumps (mongodump archives)
+dumps/

@@ -15,7 +15,7 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
 7. **DDL propagation**: Handles `drop` / `rename` / `invalidate` and updates local metadata accordingly.
 8. **Periodic reconciliation**: Every 6 hours (configurable) compares remote vs local document counts and re-applies indexes (create missing, drop obsolete). Count divergence is **detect-only** by default; set `AUTO_REPAIR_ON_DIVERGENCE=true` to drop and fully re-sync drifted collections.
 9. **Health & metrics**: `/health` (JSON) and `/metrics` (Prometheus). Status can be `healthy`, `syncing`, `degraded`, `initializing`, or `unhealthy`.
-10. **Hardened local target**: Root auth required (no compose password default). Mongo and health ports bind to `127.0.0.1` on the host.
+10. **Hardened local target**: Root auth required (no compose password default). Health stays on `127.0.0.1`; Mongo is published on the host port — lock it down with EC2 Security Group (your PC IP only), not `0.0.0.0/0`.
 11. **Daily log rotation**: `combined/` and `errors/` under the log volume, gzip of prior days, 60-day retention, Docker json-file caps (10m × 3).
 
 ---
@@ -27,66 +27,75 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
 ├── docker-compose.yml
 ├── .env.example
 ├── README.md
-├── SHIPMENT.md              # how to ship local Mongo data to another host
-├── shipment.sh              # interactive SSH transfer of DATA_SOURCE
+├── db-dump.sh               # compressed mongodump of local synced DB
 ├── monitor.sh
-├── DATA_SOURCE/             # local MongoDB data dir (gitignored; created at runtime)
-├── LOGS/                    # sync service logs (gitignored)
+├── data/                    # Mongo data for this install (gitignored)
+├── logs/                    # sync logs for this install (gitignored)
+├── dumps/                   # .archive.gz dumps from db-dump.sh (gitignored)
 └── mongodb-sync/
-    ├── app.js
-    ├── oplog-sync-service.js
-    ├── sync-manager.js
-    ├── health-server.js
-    ├── logger.js
-    ├── Dockerfile
-    ├── docker-entrypoint.sh
-    ├── package.json
-    └── test/
-        └── sync-service.test.js
+    └── ...
 ```
 
 ---
 
 ## Quick Start
 
-1. Copy the environment template:
+1. Deploy a copy of this repo per database, e.g.:
+   - `/var/www/db-retail`
+   - `/var/www/db-pass`
+2. In each folder:
    ```bash
    cp .env.example .env
-   ```
-2. Edit `.env`: set a strong `LOCAL_MONGO_ROOT_PASSWORD` and your `REMOTE_MONGODB_URL` / database name.
-3. Start:
-   ```bash
+   # edit .env — use unique LOCAL_MONGO_PORT and SYNC_AGENT_PORT on the same EC2
    docker compose up -d --build
    ```
+
+### Multiple databases on one EC2
+
+Use **separate folders** (recommended). Compose project name follows the directory (`db-retail`, `db-pass`), so containers do not clash. Only **host ports** must be unique:
+
+| Install path | `LOCAL_MONGO_PORT` | `SYNC_AGENT_PORT` |
+|--------------|--------------------|-----------------|
+| `/var/www/db-retail` | `27018` | `3001` |
+| `/var/www/db-pass` | `27019` | `3002` |
+
+```bash
+cd /var/www/db-retail && docker compose up -d --build
+cd /var/www/db-pass   && docker compose up -d --build
+```
+
+Compass example (retail):
+
+```text
+mongodb://admin:PASSWORD@EC2_PUBLIC_IP:27018/DB_NAME?authSource=admin
+```
+
+Allow each Mongo port in the Security Group from your PC IP only.
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|---|---|---|
-| `MONGO_DATABASE_NAME` | Database name to sync | `sync_db` |
-| `LOCAL_MONGO_PORT` | Host port for local MongoDB | `27017` |
-| `MONGO_IMAGE` | Local MongoDB image | `mongo:7` |
-| `LOCAL_MONGO_ROOT_USER` | Local Mongo root user | *required* |
-| `LOCAL_MONGO_ROOT_PASSWORD` | Local Mongo root password | *required* |
-| `REMOTE_MONGODB_URL` | Remote connection string (`{MONGO_DATABASE_NAME}` ok) | *required* |
-| `LOCAL_MONGO_URL` | Local connection string (placeholders supported) | *required* |
-| `PORT` | Health/metrics port | `3000` |
-| `HEALTH_BIND_HOST` | Bind address inside the container (`0.0.0.0` in Compose) | `127.0.0.1` |
-| `LOG_LEVEL` | Winston level | `info` |
-| `MAX_RETRIES` | Retries for transient stream errors before marking failed | `10` |
-| `RETRY_DELAY_MS` | Delay between retries | `5000` |
-| `DISCOVERY_INTERVAL_MS` | New-collection poll interval | `60000` |
-| `DIVERGENCE_CHECK_INTERVAL_MS` | Count + index reconciliation interval | `21600000` (6h) |
-| `AUTO_REPAIR_ON_DIVERGENCE` | If `true`, re-sync collections whose count drift ≥ threshold | `false` |
-| `DIVERGENCE_REPAIR_THRESHOLD` | Minimum `|remote−local|` count to trigger auto-repair | `1` |
+**Required** (per install `.env`):
+
+| Variable | Description |
+|---|---|
+| `MONGO_DATABASE_NAME` | Database name to sync |
+| `LOCAL_MONGO_PORT` | Host Mongo port — **unique per install on this EC2** |
+| `SYNC_AGENT_PORT` | Sync `/health` & `/metrics` on `127.0.0.1` — **unique per install** |
+| `LOCAL_MONGO_ROOT_USER` | Local Mongo root user |
+| `LOCAL_MONGO_ROOT_PASSWORD` | Local Mongo root password |
+| `REMOTE_MONGODB_URL` | Atlas/source URI (`{MONGO_DATABASE_NAME}` ok) |
+
+`LOCAL_MONGO_URL` is set by Compose to `mongo:27017` inside that install’s network.
+
+Optional vars (`LOG_LEVEL`, `LOG_REPLICATION_EVENTS`, retries, divergence repair, etc.) are listed with defaults in [`.env.example`](./.env.example).
 
 ---
 
 ## Monitoring (`monitor.sh`)
 
-Interactive helper for live sync watch, logs, health/metrics, and local DB queries. Uses `.env` (`PORT`, Mongo credentials).
+Interactive helper for live sync watch, logs, health/metrics, and local DB queries. Uses `.env` (`SYNC_AGENT_PORT`, Mongo credentials).
 
 ```bash
 chmod +x monitor.sh
@@ -96,13 +105,13 @@ chmod +x monitor.sh
 | Option | What it does |
 |--------|----------------|
 | `1` | Tail sync container stdout/stderr |
-| `2` | Tail today's `LOGS/combined/` file (**does not** show each doc at default `LOG_LEVEL=info`) |
+| `2` | Tail today's log under `logs/combined/` |
 | `3` | Tail today's error log |
 | `4` | `GET /health` JSON |
 | `5` | `GET /metrics` once (Prometheus) |
 | `6` | **Watch live sync counters** — polls health; `totalSynced` rises when source changes replicate |
 | `7` | Watch replication log lines (set `LOG_REPLICATION_EVENTS=true` in `.env`, recreate sync) |
-| `8` | **Query LOCAL DB only** — counts/samples/custom JS against `mongo-sync-target` (synced data). Never Atlas/remote. |
+| `8` | **Query LOCAL DB only** — against this install’s `mongo` service. Never Atlas/remote. |
 | `9` | Exit |
 
 To see each INSERT/UPDATE/DELETE in option `7`:
@@ -114,11 +123,11 @@ docker compose up -d sync
 ./monitor.sh   # choose 7
 ```
 
-Equivalent manual checks:
+Equivalent manual checks (use your install's `SYNC_AGENT_PORT`):
 
 ```bash
-curl http://127.0.0.1:3000/health
-curl http://127.0.0.1:3000/metrics
+curl http://127.0.0.1:3001/health
+curl http://127.0.0.1:3001/metrics
 docker compose logs -f sync
 ```
 
@@ -134,18 +143,35 @@ npm test
 
 ---
 
-## Shipping local data (`DATA_SOURCE`)
+## Database dump (`db-dump.sh`)
 
-The Compose volume `./DATA_SOURCE` is the **full local MongoDB data directory**. To move it to another machine (e.g. when this host is down for sync), use:
+Creates a **gzip-compressed** `mongodump` archive of the local synced DB (small enough to SFTP, restorable with `mongorestore`).
 
 ```bash
-chmod +x shipment.sh
-./shipment.sh
+cd /var/www/db-retail   # your install folder
+chmod +x db-dump.sh
+./db-dump.sh
 ```
 
-The script prompts for remote IP, SSH user, key or password, and destination path (default `/var/www/SyncMongoDB`), then packs and uploads `DATA_SOURCE` over SSH.
+Output example:
 
-Full steps, restore, and safety notes: see [SHIPMENT.md](./SHIPMENT.md).
+```text
+dumps/db-retail-your_db_name-20260918-163000.archive.gz
+```
+
+**Download** the file with SFTP/SCP from the EC2 host, then **restore** elsewhere:
+
+```bash
+mongorestore -u admin -p 'PASSWORD' --authenticationDatabase admin \
+  --gzip --archive=./db-retail-your_db_name-20260918-163000.archive.gz
+```
+
+Optional: restore into a different database name:
+
+```bash
+mongorestore -u admin -p 'PASSWORD' --authenticationDatabase admin \
+  --gzip --archive=./file.archive.gz --nsFrom='old_db.*' --nsTo='new_db.*'
+```
 
 ---
 
@@ -154,4 +180,5 @@ Full steps, restore, and safety notes: see [SHIPMENT.md](./SHIPMENT.md).
 - Collections whose names start with `_` (including `_sync_metadata`) and `system.*` are not synced from the remote.
 - After a long outage, if the change stream resume token has fallen off the oplog, expect a **full re-sync** (local user collections dropped and recopied). Size capacity and oplog window accordingly.
 - Prefer keeping `AUTO_REPAIR_ON_DIVERGENCE=false` unless you accept periodic full collection rebuilds when counts disagree (counts alone are a coarse signal).
-- Ship the **entire** `DATA_SOURCE` tree (or use `shipment.sh`); do not copy individual `.wt` files. Use the same Mongo major version (`mongo:7`) and root credentials on the destination.
+- Prefer `./db-dump.sh` for portable backups (compressed archive). Copying raw `data/` WiredTiger files only works with the same Mongo major version and a clean stop.
+- On one EC2 with multiple installs (`/var/www/db-retail`, `/var/www/db-pass`, …), use different `LOCAL_MONGO_PORT` and `SYNC_AGENT_PORT` in each `.env`.

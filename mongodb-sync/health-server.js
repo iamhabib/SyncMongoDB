@@ -1,7 +1,7 @@
 const express = require('express');
 const logger = require('./logger');
 
-function createHealthServer(syncService, port = process.env.PORT || 3000) {
+function createHealthServer(syncService, port = process.env.SYNC_AGENT_PORT || process.env.PORT || 3000) {
   const app = express();
   const host = process.env.HEALTH_BIND_HOST || '127.0.0.1';
 
