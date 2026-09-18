@@ -2,7 +2,7 @@
 
 Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) into a local/self-hosted MongoDB instance in near real time, using **Change Streams** plus an automatic **initial sync**. Progress is tracked via Change Stream resume tokens and keyset pagination metadata in the `_sync_metadata` collection on the target database.
 
-> **Requirement:** the remote deployment must support Change Streams (replica set or sharded cluster / Atlas). Standalone MongoDB is not supported as a source.
+> **Requirement:** the remote deployment must support Change Streams (replica set or sharded cluster / Atlas). Standalone MongoDB is not supported as a source. Change Streams are backed by the replica-set oplog; you do not configure “oplog tailing” separately in this app.
 
 ## Architecture & Production Features
 
@@ -40,37 +40,117 @@ Sync service that mirrors collection changes from a remote MongoDB (e.g. Atlas) 
 
 ## Quick Start
 
-1. Deploy a copy of this repo per database, e.g.:
-   - `/var/www/db-retail`
-   - `/var/www/db-pass`
-2. In each folder:
-   ```bash
+1. Copy this project into an install directory on the host (one copy per database you sync).
+2. Configure and start:
+  ```bash
    cp .env.example .env
-   # edit .env — use unique LOCAL_MONGO_PORT and SYNC_AGENT_PORT on the same EC2
+   # edit .env — set remote URI, DB name, passwords, and unique ports if multiple installs share one host
    docker compose up -d --build
-   ```
+  ```
 
-### Multiple databases on one EC2
+### Multiple databases on one host
 
-Use **separate folders** (recommended). Compose project name follows the directory (`db-retail`, `db-pass`), so containers do not clash. Only **host ports** must be unique:
+Use **separate install folders**. Compose project name follows the directory name, so containers do not clash. Only **host ports** must be unique per install:
 
-| Install path | `LOCAL_MONGO_PORT` | `SYNC_AGENT_PORT` |
-|--------------|--------------------|-----------------|
-| `/var/www/db-retail` | `27018` | `3001` |
-| `/var/www/db-pass` | `27019` | `3002` |
+
+|                    | Install A            | Install B            |
+| ------------------ | -------------------- | -------------------- |
+| Folder             | `/var/www/sync-db-a` | `/var/www/sync-db-b` |
+| `LOCAL_MONGO_PORT` | `27018`              | `27019`              |
+| `SYNC_AGENT_PORT`  | `3001`               | `3002`               |
+
 
 ```bash
-cd /var/www/db-retail && docker compose up -d --build
-cd /var/www/db-pass   && docker compose up -d --build
+cd /var/www/sync-db-a && docker compose up -d --build
+cd /var/www/sync-db-b && docker compose up -d --build
 ```
 
-Compass example (retail):
+Compass (from your PC, after Security Group allows your IP on that Mongo port):
 
 ```text
-mongodb://admin:PASSWORD@EC2_PUBLIC_IP:27018/DB_NAME?authSource=admin
+mongodb://admin:PASSWORD@HOST_PUBLIC_IP:LOCAL_MONGO_PORT/MONGO_DATABASE_NAME?authSource=admin
 ```
 
-Allow each Mongo port in the Security Group from your PC IP only.
+---
+
+## Remote database access (Change Streams / oplog)
+
+This service reads the remote DB with the official driver **Change Stream** API (`db.watch()`). On replica sets and Atlas, that is powered by the **oplog**. You configure a remote user and network access — you do not enable a separate “oplog sync” flag in this repo.
+
+### 1. Cluster / topology
+
+- **Atlas**: any cluster (replica set / sharded) supports Change Streams.
+- **Self-hosted**: must be a **replica set** (or sharded). Standalone `mongod` cannot be the source.
+
+Keep the oplog window large enough for your worst outage (if the resume token falls off the oplog, this service does a **full re-sync**).
+
+### 2. Network access
+
+- **Atlas → Network Access**: allow the **sync host’s public IP** (or VPC peering / private endpoint if you use those).
+- Do not use `0.0.0.0/0` in production unless you accept the risk.
+
+### 3. Database user (least privilege)
+
+Create a dedicated sync user on the remote cluster. Minimum useful privileges for this app:
+
+
+| Need                                                       | Why                           |
+| ---------------------------------------------------------- | ----------------------------- |
+| `find` / `changeStream` (or `read`) on the synced database | Initial copy + Change Streams |
+| `listCollections` on that database                         | Discovery of collections      |
+| `listIndexes` (included with typical read roles)           | Index replication             |
+
+
+**Atlas UI:** Database Access → Add user → built-in role `**read`** on the target database (or `readAnyDatabase` only if you must sync many DBs with one user — this app syncs one `MONGO_DATABASE_NAME` per install).
+
+**Self-hosted example** (run as admin on the remote cluster):
+
+```javascript
+use admin
+db.createUser({
+  user: "sync_reader",
+  pwd: "STRONG_PASSWORD",
+  roles: [
+    { role: "read", db: "YOUR_DATABASE_NAME" }
+  ]
+})
+```
+
+If you also need to read from multiple databases with one user:
+
+```javascript
+db.createUser({
+  user: "sync_reader",
+  pwd: "STRONG_PASSWORD",
+  roles: [ { role: "readAnyDatabase", db: "admin" } ]
+})
+```
+
+URL-encode special characters in the password when putting it in `REMOTE_MONGODB_URL`.
+
+### 4. Connection string
+
+Set in `.env`:
+
+```env
+MONGO_DATABASE_NAME=YOUR_DATABASE_NAME
+REMOTE_MONGODB_URL=mongodb+srv://sync_reader:ENCODED_PASSWORD@cluster.mongodb.net/{MONGO_DATABASE_NAME}?retryWrites=true&w=majority
+```
+
+For a self-hosted replica set (non-SRV):
+
+```env
+REMOTE_MONGODB_URL=mongodb://sync_reader:ENCODED_PASSWORD@host1:27017,host2:27017,host3:27017/{MONGO_DATABASE_NAME}?replicaSet=rs0&authSource=admin
+```
+
+### 5. Quick verify from the sync host
+
+```bash
+# optional: mongosh against Atlas/remote with the sync user
+mongosh "$REMOTE_MONGODB_URL" --eval 'db.runCommand({ ping: 1 })'
+```
+
+Then start Compose and confirm `/health` is healthy and collections appear locally (`./monitor.sh` option 8).
 
 ---
 
@@ -78,18 +158,20 @@ Allow each Mongo port in the Security Group from your PC IP only.
 
 **Required** (per install `.env`):
 
-| Variable | Description |
-|---|---|
-| `MONGO_DATABASE_NAME` | Database name to sync |
-| `LOCAL_MONGO_PORT` | Host Mongo port — **unique per install on this EC2** |
-| `SYNC_AGENT_PORT` | Sync `/health` & `/metrics` on `127.0.0.1` — **unique per install** |
-| `LOCAL_MONGO_ROOT_USER` | Local Mongo root user |
-| `LOCAL_MONGO_ROOT_PASSWORD` | Local Mongo root password |
-| `REMOTE_MONGODB_URL` | Atlas/source URI (`{MONGO_DATABASE_NAME}` ok) |
+
+| Variable                    | Description                                                         |
+| --------------------------- | ------------------------------------------------------------------- |
+| `MONGO_DATABASE_NAME`       | Database name to sync                                               |
+| `LOCAL_MONGO_PORT`          | Host Mongo port — **unique per install on the same host**           |
+| `SYNC_AGENT_PORT`           | Sync `/health` & `/metrics` on `127.0.0.1` — **unique per install** |
+| `LOCAL_MONGO_ROOT_USER`     | Local Mongo root user                                               |
+| `LOCAL_MONGO_ROOT_PASSWORD` | Local Mongo root password                                           |
+| `REMOTE_MONGODB_URL`        | Remote/Atlas URI (`{MONGO_DATABASE_NAME}` ok)                       |
+
 
 `LOCAL_MONGO_URL` is set by Compose to `mongo:27017` inside that install’s network.
 
-Optional vars (`LOG_LEVEL`, `LOG_REPLICATION_EVENTS`, retries, divergence repair, etc.) are listed with defaults in [`.env.example`](./.env.example).
+Optional vars (`LOG_LEVEL`, `LOG_REPLICATION_EVENTS`, retries, divergence repair, etc.) are listed with defaults in `[.env.example](./.env.example)`.
 
 ---
 
@@ -102,17 +184,19 @@ chmod +x monitor.sh
 ./monitor.sh
 ```
 
-| Option | What it does |
-|--------|----------------|
-| `1` | Tail sync container stdout/stderr |
-| `2` | Tail today's log under `logs/combined/` |
-| `3` | Tail today's error log |
-| `4` | `GET /health` JSON |
-| `5` | `GET /metrics` once (Prometheus) |
-| `6` | **Watch live sync counters** — polls health; `totalSynced` rises when source changes replicate |
-| `7` | Watch replication log lines (set `LOG_REPLICATION_EVENTS=true` in `.env`, recreate sync) |
-| `8` | **Query LOCAL DB only** — against this install’s `mongo` service. Never Atlas/remote. |
-| `9` | Exit |
+
+| Option | What it does                                                                                   |
+| ------ | ---------------------------------------------------------------------------------------------- |
+| `1`    | Tail sync container stdout/stderr                                                              |
+| `2`    | Tail today's log under `logs/combined/`                                                        |
+| `3`    | Tail today's error log                                                                         |
+| `4`    | `GET /health` JSON                                                                             |
+| `5`    | `GET /metrics` once (Prometheus)                                                               |
+| `6`    | **Watch live sync counters** — polls health; `totalSynced` rises when source changes replicate |
+| `7`    | Watch replication log lines (set `LOG_REPLICATION_EVENTS=true` in `.env`, recreate sync)       |
+| `8`    | **Query LOCAL DB only** — against this install’s `mongo` service. Never the remote source.     |
+| `9`    | Exit                                                                                           |
+
 
 To see each INSERT/UPDATE/DELETE in option `7`:
 
@@ -123,7 +207,7 @@ docker compose up -d sync
 ./monitor.sh   # choose 7
 ```
 
-Equivalent manual checks (use your install's `SYNC_AGENT_PORT`):
+Equivalent manual checks (use your install’s `SYNC_AGENT_PORT`):
 
 ```bash
 curl http://127.0.0.1:3001/health
@@ -145,10 +229,10 @@ npm test
 
 ## Database dump (`db-dump.sh`)
 
-Creates a **gzip-compressed** `mongodump` archive of the local synced DB (small enough to SFTP, restorable with `mongorestore`).
+Creates a **gzip-compressed** `mongodump` archive of the **local synced** DB.
 
 ```bash
-cd /var/www/db-retail   # your install folder
+cd /path/to/this-install
 chmod +x db-dump.sh
 ./db-dump.sh
 ```
@@ -156,21 +240,81 @@ chmod +x db-dump.sh
 Output example:
 
 ```text
-dumps/db-retail-your_db_name-20260918-163000.archive.gz
+dumps/<folder>-<db>-<timestamp>.archive.gz
 ```
 
-**Download** the file with SFTP/SCP from the EC2 host, then **restore** elsewhere:
+Copy or SFTP that file to the machine where you will run `mongorestore` (your laptop, another EC2, etc.).
+
+### Restore to MongoDB Atlas (or any remote host)
+
+Works from **any terminal** that has [MongoDB Database Tools](https://www.mongodb.com/docs/database-tools/installation/) (`mongorestore`) installed — local PC or EC2.
+
+**1. Allow this machine’s public IP** on the remote cluster  
+- Atlas → **Network Access** → Add IP Address → IP of the PC/EC2 running `mongorestore`  
+- Wait until the entry is Active  
+
+**2. Use a remote user that can write** (e.g. `readWrite` on the target DB, or Atlas `atlasAdmin` / custom role). A sync **read-only** user cannot restore.
+
+**3. Restore with a full URI** (host is inside the URI — no separate `--host` needed for `mongodb+srv`):
 
 ```bash
-mongorestore -u admin -p 'PASSWORD' --authenticationDatabase admin \
-  --gzip --archive=./db-retail-your_db_name-20260918-163000.archive.gz
+# Atlas (SRV) — replace USER, PASSWORD, CLUSTER, and archive path
+mongorestore \
+  --uri='mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/?retryWrites=true&w=majority' \
+  --gzip \
+  --archive=./dumps/your-file.archive.gz \
+  --nsInclude='SOURCE_DB.*' \
+  --nsFrom='SOURCE_DB.*' \
+  --nsTo='TARGET_DB.*'
 ```
 
-Optional: restore into a different database name:
+- `SOURCE_DB` = database name inside the dump (usually your `MONGO_DATABASE_NAME` when dumped).  
+- `TARGET_DB` = database name on Atlas (same as source, or a new name).  
+- If restoring into the **same** DB name as in the dump, you can omit `--nsFrom` / `--nsTo` and use:
 
 ```bash
-mongorestore -u admin -p 'PASSWORD' --authenticationDatabase admin \
-  --gzip --archive=./file.archive.gz --nsFrom='old_db.*' --nsTo='new_db.*'
+mongorestore \
+  --uri='mongodb+srv://USER:PASSWORD@CLUSTER.mongodb.net/TARGET_DB?retryWrites=true&w=majority' \
+  --gzip \
+  --archive=./dumps/your-file.archive.gz
+```
+
+**Self-hosted / non-SRV remote** (explicit hosts + port):
+
+```bash
+mongorestore \
+  --uri='mongodb://USER:PASSWORD@host1:27017,host2:27017,host3:27017/TARGET_DB?replicaSet=rs0&authSource=admin' \
+  --gzip \
+  --archive=./dumps/your-file.archive.gz
+```
+
+Or with separate flags:
+
+```bash
+mongorestore \
+  --host='host1:27017,host2:27017,host3:27017' \
+  --username='USER' \
+  --password='PASSWORD' \
+  --authenticationDatabase=admin \
+  --db='TARGET_DB' \
+  --gzip \
+  --archive=./dumps/your-file.archive.gz
+```
+
+**Tips**
+
+- URL-encode special characters in the password (`@` → `%40`, etc.).  
+- Drop or clear `TARGET_DB` first if you need a clean replace (`mongosh` → `use TARGET_DB` → `db.dropDatabase()`), or use `--drop` to drop collections before restore (destructive).  
+- To verify: `mongosh 'mongodb+srv://...' --eval 'db.getSiblingDB("TARGET_DB").stats()'`  
+- `_sync_metadata` from the local sync agent is included in the dump; drop that collection on Atlas after restore if you do not want sync bookkeeping there.
+
+### Restore to another local Mongo only
+
+```bash
+mongorestore \
+  --uri='mongodb://admin:PASSWORD@127.0.0.1:27018/TARGET_DB?authSource=admin' \
+  --gzip \
+  --archive=./dumps/your-file.archive.gz
 ```
 
 ---
@@ -181,4 +325,5 @@ mongorestore -u admin -p 'PASSWORD' --authenticationDatabase admin \
 - After a long outage, if the change stream resume token has fallen off the oplog, expect a **full re-sync** (local user collections dropped and recopied). Size capacity and oplog window accordingly.
 - Prefer keeping `AUTO_REPAIR_ON_DIVERGENCE=false` unless you accept periodic full collection rebuilds when counts disagree (counts alone are a coarse signal).
 - Prefer `./db-dump.sh` for portable backups (compressed archive). Copying raw `data/` WiredTiger files only works with the same Mongo major version and a clean stop.
-- On one EC2 with multiple installs (`/var/www/db-retail`, `/var/www/db-pass`, …), use different `LOCAL_MONGO_PORT` and `SYNC_AGENT_PORT` in each `.env`.
+- On one host with multiple installs, use different `LOCAL_MONGO_PORT` and `SYNC_AGENT_PORT` in each `.env`.
+
